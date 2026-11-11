@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { agentEnv, safeError } from './agents.mjs';
 
 const MAX_REPLY = 48000;
@@ -18,16 +19,19 @@ export function stopOwned(child) {
 }
 
 /** Run an HTTP agent: one streamed POST to an OpenAI-compatible /chat/completions endpoint. */
-async function runHttp(agent, prompt, { config, policy, signal, onUpdate }) {
+async function runHttp(agent, prompt, { config, policy, signal, onUpdate, attachments = [] }) {
   const start = Date.now(), timeoutMs = (config.timeoutSeconds || 180) * 1000;
   const timeout = AbortSignal.timeout(timeoutMs);
   let text = '', model = null;
   const done = (status, error) => ({ status, text: text.trim(), ...(error ? { error } : {}), model, activity: [], durationMs: Date.now() - start });
   try {
     model = await agent.model();
+    // Images are sent in the OpenAI vision format; the model behind the server must support images.
+    const images = [];
+    for (const item of attachments.filter(entry => entry.image)) images.push({ type: 'image_url', image_url: { url: 'data:' + item.type + ';base64,' + (await readFile(item.path)).toString('base64') } });
     const response = await fetch(agent.baseUrl + '/chat/completions', {
       method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...agent.headers() }, signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-      body: JSON.stringify({ model, stream: true, messages: [{ role: 'system', content: policy }, { role: 'user', content: 'INPUT (JSON):\n' + prompt }] }),
+      body: JSON.stringify({ model, stream: true, messages: [{ role: 'system', content: policy }, { role: 'user', content: images.length ? [{ type: 'text', text: 'INPUT (JSON):\n' + prompt }, ...images] : 'INPUT (JSON):\n' + prompt }] }),
     });
     if (!response.ok) return done('error', safeError('HTTP ' + response.status + ' from ' + agent.baseUrl + ': ' + (await response.text()).slice(0, 300)));
     const take = value => { const piece = value.choices?.[0]?.delta?.content ?? value.choices?.[0]?.message?.content; if (value.model) model = value.model; if (piece) { text += piece; onUpdate({ text, model, activity: [] }); } };
@@ -57,15 +61,15 @@ async function runHttp(agent, prompt, { config, policy, signal, onUpdate }) {
  * Run one agent once. Resolves with { status: 'complete' | 'error' | 'cancelled', text, error?, model, activity, durationMs }.
  * No shell is involved: the prompt travels on stdin or as a single argument.
  */
-export async function runAgent(agent, prompt, { mode, config, policy, cwd, signal, session = null, onUpdate = () => {}, spawnImpl = spawn, env = agentEnv(process.env, config) } = {}) {
-  if (agent.kind === 'http') return runHttp(agent, prompt, { config, policy, signal, onUpdate });
+export async function runAgent(agent, prompt, { mode, config, policy, cwd, signal, session = null, attachments = [], attachmentDir = null, onUpdate = () => {}, spawnImpl = spawn, env = agentEnv(process.env, config) } = {}) {
+  if (agent.kind === 'http') return runHttp(agent, prompt, { config, policy, signal, onUpdate, attachments });
   if (!agent.path) return { status: 'error', text: '', error: agent.install, activity: [] };
   if (signal?.aborted) return { status: 'cancelled', text: '', activity: [] };
   const timeoutMs = (config.timeoutSeconds || 180) * 1000;
-  const { args, stdin, stdinText } = agent.args({ mode, config, policy, prompt, session });
+  const { args, stdin, stdinText } = agent.args({ mode, config, policy, prompt, session, attachments, attachmentDir });
 
   return await new Promise(resolve => {
-    const state = { text: '', sessionId: null, model: null, changed: false, activity: [], error: null };
+    const state = { text: '', sessionId: null, model: null, changed: false, activity: [], error: null, allowRead: attachments.some(item => !item.inline) };
     const start = Date.now();
     let line = '', stderr = '', bytes = 0, settled = false, aborted = false, timedOut = false;
     let child;

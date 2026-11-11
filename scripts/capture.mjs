@@ -124,10 +124,14 @@ await sleep(400);
 await phone.shot('screenshot-mobile-table.png');
 
 // Light theme, for the README.
-await desk.evaluate(`document.getElementById('phone').close(); document.getElementById('theme').click(); document.getElementById('transcript').scrollTop = 0;`);
+// Headless Chrome does not advance CSS transitions between screenshots, so switch them off before changing theme.
+await desk.evaluate(`document.querySelectorAll('.button, .switch').forEach(node => { node.style.transition = 'none'; });`);
+await desk.evaluate(`document.getElementById('phone').close(); applyLook('light', ''); document.getElementById('transcript').scrollTop = 0;`); await sleep(1000);
 await sleep(500);
 await desk.shot('screenshot-light.png');
-await desk.evaluate(`document.getElementById('theme').click();`);
+await desk.evaluate(`applyLook('crimson', '');`); await sleep(1500);
+await desk.shot('screenshot-crimson.png');
+await desk.evaluate(`applyLook('dark', '');`);
 
 // ---------------------------------------------------------------- video
 if (record) {

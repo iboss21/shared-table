@@ -38,8 +38,9 @@
     </div>
     <button class="button block" id="new" type="button"><span aria-hidden="true">+</span> New conversation</button>
 
-    <p class="rail-label">Conversations</p>
     <nav class="conversations" id="conversations" aria-label="Saved conversations"></nav>
+    <div class="menu" id="conversation-menu" hidden role="menu"></div>
+    <div class="menu" id="appearance-menu" hidden role="menu"></div>
 
     <p class="rail-label">At the table</p>
     <div class="seats" id="seats"></div>
@@ -51,14 +52,15 @@
       <a class="button ghost" href="/api/export" download title="Download this conversation as JSON">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 19h14"/></svg>Export
       </a>
-      <button class="button ghost icon" id="theme" type="button" title="Light or dark" aria-label="Switch between light and dark">
+      <button class="button ghost icon" id="theme" type="button" title="Theme and colours" aria-label="Theme and colours">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5Z"/></svg>
       </button>
     </div>
     <p class="credit">Open source · Part of <a href="https://regescore.pro" target="_blank" rel="noopener noreferrer">RegesCore</a> by <a href="https://likeakinginc.com" target="_blank" rel="noopener noreferrer">LIKE A KING INC.</a></p>
   </aside>
 
-  <main class="chat" aria-label="Chat">
+  <main class="chat" id="chat" aria-label="Chat">
+    <div class="drop-hint" id="drop-hint" hidden>Drop files to attach them</div>
     <header class="chat-head">
       <div class="chat-title">
         <h1 id="title">New conversation</h1>
@@ -77,8 +79,13 @@
           <button type="button" data-order="sequence" title="Agents go in order; each sees what the one before it finished, for example: Claude fixes, then Codex checks">In turn</button>
         </div>
       </div>
+      <div class="pending" id="pending" hidden></div>
+      <input type="file" id="file-input" multiple hidden>
       <textarea id="message" rows="1" maxlength="8000" placeholder="Message everyone, or @mention one agent…" aria-label="Your message"></textarea>
       <div class="compose-actions">
+        <button class="button ghost icon" id="attach" type="button" title="Attach files or images. You can also paste or drop them." aria-label="Attach files">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.500 11.500 12.500 19.500a5 5 0 0 1-7-7l8.500-8.500a3.300 3.300 0 0 1 4.700 4.700L10.200 17.200a1.700 1.700 0 0 1-2.400-2.400L15 7.500"/></svg>
+        </button>
         <span class="hint" id="hint"></span>
         <button class="button ghost" id="review" type="button" title="Each agent reviews the others' last answers and converges on one plan">Cross-review</button>
         <button class="button danger" id="cancel" type="button" hidden>Stop</button>

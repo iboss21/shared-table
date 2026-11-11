@@ -15,7 +15,7 @@ const publicDir = path.join(here, '..', 'public');
 export const VERSION = JSON.parse(await fs.readFile(path.join(here, '..', 'package.json'), 'utf8')).version;
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
-const LIMITS = { messageCharacters: 8000, briefCharacters: 12000, turnsPerConversation: 200, historyTurns: 12, historyCharacters: 60000, replyInHistory: 6000, boardEntries: 200, perMinute: 10, perHour: 120, devices: 12 };
+const LIMITS = { attachmentsPerMessage: 10, attachmentBytes: 15 * 1024 * 1024, inlineTextBytes: 200 * 1024, messageCharacters: 8000, briefCharacters: 12000, turnsPerConversation: 200, historyTurns: 12, historyCharacters: 60000, replyInHistory: 6000, boardEntries: 200, perMinute: 10, perHour: 120, devices: 12 };
 const STATIC = {
   '/': ['index.html', 'text/html; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/style.css': ['style.css', 'text/css; charset=utf-8'],
   '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json'], '/icon.svg': ['icon.svg', 'image/svg+xml'],
@@ -24,6 +24,8 @@ const STATIC = {
 const BASE_HEADERS = { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Cross-Origin-Resource-Policy': 'same-origin' };
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; manifest-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
 
+const INLINE_IMAGES = { 'image/png': 1, 'image/jpeg': 1, 'image/gif': 1, 'image/webp': 1 };
+const TEXT_FILE = /\.(txt|md|markdown|json|jsonl|ya?ml|toml|ini|env\.example|csv|tsv|log|xml|html?|css|scss|js|mjs|cjs|jsx|ts|tsx|py|rb|go|rs|java|kt|swift|c|h|cc|cpp|hpp|cs|php|lua|sql|sh|zsh|bash|ps1|bat|diff|patch|vue|svelte|gradle|dockerfile|conf|cfg)$/i;
 const readJSON = async file => JSON.parse(await fs.readFile(file, 'utf8'));
 async function writeAtomic(file, value) {
   const temporary = file + '.tmp-' + randomUUID();
@@ -46,6 +48,8 @@ export async function createTable({ config, runner, authenticate, now = () => Da
   const workDir = config.projectDir;
   const env = agentEnv(process.env, config);
 
+  const attachRoot = path.join(runtime, 'attachments');
+  const uploads = new Map(); // id -> attachment waiting to be sent with a message
   const ownerCookie = randomBytes(32).toString('hex');
   const clients = new Map(); // response -> role
   const pairTokens = new Map(); // token -> expiry
@@ -116,7 +120,7 @@ export async function createTable({ config, runner, authenticate, now = () => Da
   const broadcastState = () => { for (const [res, role] of clients) send(res, { type: 'state', ...view(role) }); };
 
   // Show paths relative to the project folder, not the full path on this computer.
-  const relative = activity => (activity || []).map(step => ({ tool: step.tool, detail: String(step.detail || '').split(config.projectDir + path.sep).join('') }));
+  const relative = activity => (activity || []).map(step => ({ tool: step.tool, detail: String(step.detail || '').split(config.projectDir + path.sep).join('').replace(/^.*[\\/]attachments[\\/][a-f0-9-]{36}[\\/][a-f0-9]{18}-/, 'attached: ') }));
 
   // ------------------------------------------------------------------ prompt
   const mentionPattern = /(^|[\s(])@([a-z][a-z0-9_-]{1,23})\b/gi;
@@ -133,7 +137,7 @@ export async function createTable({ config, runner, authenticate, now = () => Da
   };
   const promptFor = (agent, request, turns) => {
     const history = turns.slice(-LIMITS.historyTurns).map(turn => ({
-      user: turn.message, kind: turn.kind,
+      user: turn.message, kind: turn.kind, ...(turn.attachments ? { attachedFiles: turn.attachments.map(item => item.name) } : {}),
       replies: Object.fromEntries(Object.entries(turn.replies).map(([id, reply]) => [id, reply.status === 'complete' ? reply.text.slice(0, LIMITS.replyInHistory) : '[' + reply.status + ']'])),
     }));
     const output = () => JSON.stringify({
@@ -165,7 +169,7 @@ export async function createTable({ config, runner, authenticate, now = () => Da
   };
 
   // ------------------------------------------------------------------ actions
-  async function startTurn({ clientId, message, explicitTargets, kind, from, order }) {
+  async function startTurn({ clientId, message, explicitTargets, kind, from, order, attachmentIds = [] }) {
     const previous = state.turns.find(turn => turn.clientId === clientId);
     if (previous) return { status: 200, body: { turnId: previous.id, duplicate: true } };
     if (state.turns.length >= LIMITS.turnsPerConversation) return { status: 409, body: { error: 'This conversation is full. Start a new one; this one stays saved.' } };
@@ -184,14 +188,34 @@ export async function createTable({ config, runner, authenticate, now = () => Da
       targets = targetsFor(message, explicitTargets);
       for (const id of targets) requests[id] = { kind: 'message', userMessage: message };
     }
+    // Attachments: text files travel inside the prompt; images and other files are handed over by path.
+    const attachments = [];
+    for (const id of attachmentIds.slice(0, LIMITS.attachmentsPerMessage)) {
+      const item = uploads.get(id);
+      if (!item || item.conversation !== state.id) continue;
+      uploads.delete(id);
+      attachments.push(item);
+    }
+    if (attachments.length) {
+      const listed = [];
+      for (const item of attachments) {
+        const entry = { name: item.name, type: item.type, bytes: item.size, path: item.path };
+        if (!item.image && item.size <= LIMITS.inlineTextBytes && (item.type.startsWith('text/') || /json|xml|javascript|yaml|toml/.test(item.type) || TEXT_FILE.test(item.name))) {
+          const text = (await fs.readFile(item.path)).toString('utf8');
+          if (!text.includes('\u0000')) { entry.text = text; item.inline = true; }
+        }
+        listed.push(entry);
+      }
+      for (const id of targets) Object.assign(requests[id], { attachments: listed, attachmentNote: 'The user attached these files to this message. Files with a "text" field are included in full. For the others (images, PDFs and so on) open the file at "path" with your file-reading tool, or use the image if it was passed to you directly.' });
+    }
 
     recent.push(now());
     if (targets.length < 2 || kind === 'review') order = 'parallel';
     const before = state.turns.slice();
-    const turn = { id: randomUUID(), clientId, createdAt: new Date().toISOString(), kind, message, from, targets, order, replies: Object.fromEntries(targets.map(id => [id, { status: 'queued', text: '', activity: [] }])) };
+    const turn = { id: randomUUID(), clientId, createdAt: new Date().toISOString(), kind, message, from, targets, order, ...(attachments.length ? { attachments: attachments.map(({ id, name, type, size, image }) => ({ id, name, type, size, image })) } : {}), replies: Object.fromEntries(targets.map(id => [id, { status: 'queued', text: '', activity: [] }])) };
     state.turns.push(turn);
     const entry = index.find(row => row.id === state.id);
-    if (state.turns.length === 1 && entry) entry.title = message.replace(/\s+/g, ' ').slice(0, 70);
+    if (state.turns.length === 1 && entry && !entry.renamed) entry.title = message.replace(/\s+/g, ' ').slice(0, 70);
     const controller = new AbortController();
     active = { turnId: turn.id, controller };
     try { await persist(); } catch { active = null; state.turns.pop(); return { status: 503, body: { error: 'The conversation could not be saved. No request was started.' } }; }
@@ -210,7 +234,7 @@ export async function createTable({ config, runner, authenticate, now = () => Da
       const session = config.sessions === 'native' && agent.kind !== 'http' ? { id: state.sessions[id] || randomUUID(), resume: !!state.sessions[id] } : null;
       let last = 0;
       const result = await run(agent, promptFor(agent, request, before), {
-        mode: config.mode, config, policy: policyFor(agent, agents, agent.kind === 'http' ? 'advise' : config.mode), cwd: workDir, signal: controller.signal, env, session,
+        mode: config.mode, config, policy: policyFor(agent, agents, agent.kind === 'http' ? 'advise' : config.mode), cwd: workDir, signal: controller.signal, env, session, attachments, attachmentDir: attachments.length ? path.dirname(attachments[0].path) : null,
         onUpdate: change => {
           Object.assign(turn.replies[id], { text: visibleText(change.text), model: change.model, activity: relative(change.activity) });
           if (now() - last >= 90) { last = now(); broadcast({ type: 'reply', turnId: turn.id, agent: id, reply: turn.replies[id] }); }
@@ -305,7 +329,7 @@ export async function createTable({ config, runner, authenticate, now = () => Da
         let origin = null;
         try { origin = new URL(req.headers.origin || '').host; } catch { /* missing */ }
         if (origin !== host) return json(res, 403, { error: 'Same-origin requests only.' });
-        if (req.headers['content-type']?.split(';')[0] !== 'application/json') return json(res, 415, { error: 'JSON is required.' });
+        if (pathname !== '/api/upload' && req.headers['content-type']?.split(';')[0] !== 'application/json') return json(res, 415, { error: 'JSON is required.' });
       }
 
       // Pairing a phone: the only API call that works without a session.
@@ -329,6 +353,36 @@ export async function createTable({ config, runner, authenticate, now = () => Da
       const from = role === 'owner' ? 'you' : device.name;
 
       if (req.method === 'GET' && pathname === '/api/state') return json(res, 200, view(role));
+
+      // Attachments: upload the raw file, get an id back, send the id with the message.
+      if (req.method === 'POST' && pathname === '/api/upload') {
+        let name = 'file';
+        try { name = decodeURIComponent(String(req.headers['x-file-name'] || 'file')); } catch { /* keep default */ }
+        name = path.basename(name).replace(/[^\w .()+@,=-]/g, '_').replace(/^\.+/, '').slice(0, 120) || 'file';
+        if (Number(req.headers['content-length']) > LIMITS.attachmentBytes) return json(res, 413, { error: 'Files can be at most ' + LIMITS.attachmentBytes / 1048576 + ' MB.' });
+        if (uploads.size >= 60) return json(res, 429, { error: 'Too many files waiting. Send or remove some first.' });
+        const chunks = []; let size = 0;
+        for await (const chunk of req) { size += chunk.length; if (size > LIMITS.attachmentBytes) return json(res, 413, { error: 'Files can be at most ' + LIMITS.attachmentBytes / 1048576 + ' MB.' }); chunks.push(chunk); }
+        if (!size) return json(res, 400, { error: 'The file is empty.' });
+        const id = randomBytes(9).toString('hex'), folder = path.join(attachRoot, state.id);
+        await fs.mkdir(folder, { recursive: true });
+        const type = String(req.headers['content-type'] || 'application/octet-stream').split(';')[0].toLowerCase().slice(0, 80);
+        const item = { id, name, type, size, image: !!INLINE_IMAGES[type], conversation: state.id, path: path.join(folder, id + '-' + name) };
+        await fs.writeFile(item.path, Buffer.concat(chunks), { mode: 0o600 });
+        uploads.set(id, item);
+        return json(res, 201, { id, name, type, size, image: item.image });
+      }
+      if (req.method === 'GET' && pathname.startsWith('/api/file/')) {
+        const id = pathname.slice(10);
+        const item = uploads.get(id) || state.turns.flatMap(turn => turn.attachments || []).find(entry => entry.id === id);
+        if (!item || !/^[a-f0-9]{18}$/.test(id)) return json(res, 404, { error: 'Not found.' });
+        const file = item.path || path.join(attachRoot, state.id, id + '-' + item.name);
+        try {
+          const body = await fs.readFile(file);
+          res.writeHead(200, { ...BASE_HEADERS, 'Content-Type': INLINE_IMAGES[item.type] ? item.type : 'application/octet-stream', 'Content-Security-Policy': "default-src 'none'; sandbox", ...(INLINE_IMAGES[item.type] ? {} : { 'Content-Disposition': 'attachment; filename="' + item.name.replace(/"/g, '') + '"' }) });
+          return res.end(body);
+        } catch { return json(res, 404, { error: 'The file is gone.' }); }
+      }
       if (req.method === 'GET' && pathname === '/api/export') return json(res, 200, state, { 'Content-Disposition': 'attachment; filename="shared-table-' + state.id + '.json"' });
       if (req.method === 'GET' && pathname === '/api/events') {
         if (clients.size >= 24) return json(res, 429, { error: 'Too many open tabs.' });
@@ -363,6 +417,17 @@ export async function createTable({ config, runner, authenticate, now = () => Da
       if (pathname === '/api/brief') {
         if (typeof value.brief !== 'string' || value.brief.length > LIMITS.briefCharacters) return json(res, 400, { error: 'The brief is too long.' });
         state.brief = value.brief; await persist(); broadcastState();
+        return json(res, 200, { ok: true });
+      }
+
+      // Rename, pin or group a conversation.
+      if (pathname === '/api/conversation') {
+        const row = index.find(item => item.id === value.id);
+        if (!row) return json(res, 400, { error: 'Unknown conversation.' });
+        if (typeof value.title === 'string') { const title = value.title.replace(/\s+/g, ' ').trim().slice(0, 80); if (!title) return json(res, 400, { error: 'A conversation needs a name.' }); row.title = title; row.renamed = true; }
+        if (typeof value.pinned === 'boolean') row.pinned = value.pinned;
+        if (typeof value.group === 'string') { const group = value.group.replace(/\s+/g, ' ').trim().slice(0, 40); if (group) row.group = group; else delete row.group; }
+        await persist(); broadcastState();
         return json(res, 200, { ok: true });
       }
 
@@ -409,6 +474,7 @@ export async function createTable({ config, runner, authenticate, now = () => Da
         if (!UUID.test(value.id) || !index.some(row => row.id === value.id)) return json(res, 400, { error: 'Unknown conversation.' });
         index = index.filter(row => row.id !== value.id);
         await fs.rm(path.join(runtime, 'conversations', value.id + '.json'), { force: true });
+        await fs.rm(path.join(attachRoot, value.id), { recursive: true, force: true });
         if (state.id === value.id) {
           if (index.length) state = await readJSON(path.join(runtime, 'conversations', index.at(-1).id + '.json'));
           else { state = newConversation(); index.push({ id: state.id, createdAt: state.createdAt, title: 'New conversation' }); }
@@ -420,9 +486,10 @@ export async function createTable({ config, runner, authenticate, now = () => Da
       if (pathname === '/api/message') {
         const kind = value.kind === 'review' ? 'review' : 'message';
         const message = typeof value.message === 'string' ? value.message.trim() : '';
-        if (!UUID.test(value.clientId || '') || message.length > LIMITS.messageCharacters || (kind === 'message' && !message)) return json(res, 400, { error: 'Write a message of at most ' + LIMITS.messageCharacters + ' characters.' });
+        const attachmentIds = Array.isArray(value.attachments) ? value.attachments.filter(item => typeof item === 'string') : [];
+        if (!UUID.test(value.clientId || '') || message.length > LIMITS.messageCharacters || (kind === 'message' && !message && !attachmentIds.length)) return json(res, 400, { error: 'Write a message of at most ' + LIMITS.messageCharacters + ' characters.' });
         if (typeof value.brief === 'string' && value.brief.length <= LIMITS.briefCharacters) state.brief = value.brief;
-        const result = await startTurn({ clientId: value.clientId, message, explicitTargets: value.targets, kind, from, order: value.order === 'sequence' ? 'sequence' : 'parallel' });
+        const result = await startTurn({ clientId: value.clientId, message: message || (attachmentIds.length ? 'See the attached file' + (attachmentIds.length > 1 ? 's' : '') + '.' : ''), explicitTargets: value.targets, kind, from, attachmentIds, order: value.order === 'sequence' ? 'sequence' : 'parallel' });
         return json(res, result.status, result.body);
       }
       return json(res, 404, { error: 'Not found.' });

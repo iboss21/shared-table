@@ -217,3 +217,47 @@ test('HTTP agents: an OpenAI-compatible server streams an answer, gets the key f
   assert.equal((await runAgent(down, '{}', { mode: 'advise', config, policy: 'P' })).status, 'error');
   assert.equal(resolveAgents({ ...config, agents: 'lmstudio,ollama', customAgents: [] }, { PATH: '' }).map(a => a.baseUrl).join(' '), 'http://127.0.0.1:1234/v1 http://127.0.0.1:11434/v1');
 });
+
+test('conversations can be renamed, pinned and grouped; a renamed conversation keeps its name after the first message', async t => {
+  const { post, state, settle } = await table(t);
+  const first = (await state()).conversation.id;
+  assert.equal((await post('/api/conversation', { id: first, title: '  Billing   exports ', pinned: true, group: 'Acme' })).status, 200);
+  await post('/api/message', { clientId: id(), message: 'hello there' }); await settle();
+  let row = (await state()).conversations[0];
+  assert.deepEqual([row.title, row.pinned, row.group], ['Billing exports', true, 'Acme']);
+  await post('/api/conversation', { id: first, pinned: false, group: '' });
+  row = (await state()).conversations[0];
+  assert.deepEqual([row.pinned, row.group], [false, undefined]);
+  assert.equal((await post('/api/conversation', { id: first, title: '   ' })).status, 400);
+  assert.equal((await post('/api/conversation', { id: crypto.randomUUID(), title: 'x' })).status, 400);
+});
+
+test('attachments: text files are inlined for every agent, images are handed over by path, and files are served back only to a signed-in session', async t => {
+  const { instance, cookie, post, settle, calls } = await table(t);
+  const upload = (name, type, body) => fetch(instance.origin + '/api/upload', { method: 'POST', headers: { 'Content-Type': type, 'X-File-Name': encodeURIComponent(name), Origin: instance.origin, Cookie: cookie }, body });
+  const note = await (await upload('../notes.md', 'text/markdown', '# Plan\nShip it.')).json();
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+  const image = await (await upload('shot.png', 'image/png', png)).json();
+  assert.equal(note.name, 'notes.md');
+  assert.equal(image.image, true);
+  assert.equal((await post('/api/message', { clientId: id(), message: '', attachments: [note.id, image.id] })).status, 202);
+  const turn = (await settle()).conversation.turns[0];
+  assert.deepEqual(turn.attachments.map(item => item.name), ['notes.md', 'shot.png']);
+  assert.equal(turn.attachments[0].path, undefined, 'disk paths are not sent to the browser');
+  const request = calls[0].prompt.request;
+  assert.equal(request.attachments[0].text, '# Plan\nShip it.');
+  assert.equal(request.attachments[1].text, undefined);
+  assert.match(request.attachments[1].path, /shot\.png$/);
+  assert.equal((await fetch(instance.origin + '/api/file/' + image.id)).status, 401);
+  const served = await fetch(instance.origin + '/api/file/' + image.id, { headers: { Cookie: cookie } });
+  assert.equal(served.headers.get('content-type'), 'image/png');
+  assert.equal((await fetch(instance.origin + '/api/file/' + note.id, { headers: { Cookie: cookie } })).headers.get('content-disposition'), 'attachment; filename="notes.md"');
+  const config = loadConfig({ argv: [], env: {}, cwd: os.tmpdir() });
+  const [claude, codex] = resolveAgents({ ...config, agents: 'claude,codex' }, { PATH: '' });
+  const files = [{ name: 'shot.png', image: true, path: '/tmp/a/shot.png' }];
+  const claudeArgs = claude.args({ mode: 'advise', config, policy: 'P', attachments: files, attachmentDir: '/tmp/a' }).args;
+  assert.equal(claudeArgs[claudeArgs.indexOf('--tools') + 1], 'Read');
+  assert.equal(claudeArgs[claudeArgs.indexOf('--add-dir') + 1], '/tmp/a');
+  const codexArgs = codex.args({ mode: 'advise', config, policy: 'P', attachments: files }).args;
+  assert.deepEqual(codexArgs.slice(0, 4), ['exec', '--image', '/tmp/a/shot.png', '--skip-git-repo-check']);
+});

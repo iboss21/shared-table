@@ -91,7 +91,9 @@ const claude = {
   resumeCommand: (id, folder) => 'cd ' + JSON.stringify(folder) + ' && claude --resume ' + id,
   find: (config, env) => findExecutable('claude', { configured: config.claudePath, env, extra: claudeLocations(env) }),
   install: 'Install Claude Code, then run: claude auth login',
-  args({ mode, config, policy, session }) {
+  args({ mode, config, policy, session, attachments = [], attachmentDir }) {
+    // Files that are not inlined as text (images, PDFs) are opened by Claude with its Read tool.
+    const files = attachments.some(item => !item.inline);
     const args = ['--permission-prompts', 'none', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
     // Own session: the first turn names it, later turns resume it, so Claude keeps its own working memory.
     if (session) args.push(...(session.resume ? ['--resume', session.id] : ['--session-id', session.id]));
@@ -99,7 +101,8 @@ const claude = {
     // Build mode runs Claude Code's full harness (project CLAUDE.md, user settings, MCP servers). Other modes are sealed.
     if (mode !== 'build') args.push('--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--disable-slash-commands', '--no-chrome');
     if (config.claudeModel) args.push('--model', config.claudeModel);
-    if (mode === 'advise') args.push('--safe-mode', '--restricted', '--setting-sources', '', '--tools', '', '--permission-mode', 'dontAsk', '--system-prompt', policy);
+    if (files) args.push('--add-dir', attachmentDir);
+    if (mode === 'advise') args.push('--safe-mode', '--restricted', '--setting-sources', '', '--tools', files ? 'Read' : '', ...(files ? ['--allowedTools', 'Read'] : []), '--permission-mode', 'dontAsk', '--system-prompt', policy);
     else if (mode === 'read') args.push('--safe-mode', '--restricted', '--setting-sources', '', '--tools', 'Read,Glob,Grep', '--allowedTools', 'Read,Glob,Grep', '--permission-mode', 'dontAsk', '--append-system-prompt', policy);
     else args.push('--allowedTools', 'Read,Glob,Grep,Edit,Write,Bash', '--permission-mode', 'acceptEdits', '--append-system-prompt', policy);
     args.push('-p');
@@ -118,14 +121,14 @@ const claude = {
   parse(event, state, mode) {
     if (event.type === 'system' && event.subtype === 'init') {
       state.sessionId = event.session_id; state.model = event.model;
-      if (mode === 'advise' && (event.tools?.length || event.mcp_servers?.length)) throw new Error('Stopped: Claude exposed tools in advise mode.');
+      if (mode === 'advise' && ((event.tools || []).some(tool => !(state.allowRead && tool === 'Read')) || event.mcp_servers?.length)) throw new Error('Stopped: Claude exposed tools in advise mode.');
     }
     if (event.type === 'stream_event' && event.event?.type === 'content_block_delta' && event.event.delta?.type === 'text_delta') { state.text += event.event.delta.text; state.changed = true; }
     if (event.type === 'stream_event' && event.event?.type === 'message_start' && state.text && !state.text.endsWith('\n')) state.text += '\n\n';
     if (event.type === 'assistant') {
       for (const block of event.message?.content || []) {
         if (block.type !== 'tool_use') continue;
-        if (mode === 'advise') throw new Error('Stopped: Claude attempted a tool action in advise mode.');
+        if (mode === 'advise' && !(state.allowRead && block.name === 'Read')) throw new Error('Stopped: Claude attempted a tool action in advise mode.');
         state.activity.push({ tool: block.name, detail: short(block.input?.file_path || block.input?.pattern || block.input?.command || block.input?.path || '') }); state.changed = true;
       }
       const text = (event.message?.content || []).filter(block => block.type === 'text').map(block => block.text).join('\n');
@@ -145,9 +148,11 @@ const codex = {
   resumeCommand: (id, folder) => 'cd ' + JSON.stringify(folder) + ' && codex resume ' + id,
   find: (config, env) => findExecutable('codex', { configured: config.codexPath, env, extra: codexLocations(env) }),
   install: 'Install the Codex CLI (npm install -g @openai/codex), then run: codex login',
-  args({ mode, config, policy, session }) {
+  args({ mode, config, policy, session, attachments = [] }) {
     // Own session: later turns resume the Codex thread started by the first one.
     const args = session?.resume ? ['exec', 'resume', session.id] : ['exec'];
+    // Images go to Codex directly. One --image per file, each followed by another flag so the list cannot swallow the prompt.
+    for (const item of attachments.filter(entry => entry.image)) args.push('--image', item.path);
     // `exec resume` has no --sandbox flag, so the sandbox is set through config, which both forms accept.
     args.push('--skip-git-repo-check', '--json', '-c', 'sandbox_mode="' + (mode === 'build' ? 'workspace-write' : 'read-only') + '"');
     if (!session) args.push('--ephemeral');

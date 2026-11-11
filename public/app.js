@@ -9,7 +9,7 @@ const STARTERS = [
   ['@codex', '@codex list the edge cases and failure modes we have not handled.'],
 ];
 
-let order = 'parallel';
+let order = 'parallel', pending = [];
 let state = null, selected = new Set(), filter = 'all', pairVia = null, pairTimer = null, requestId = null, briefTimer = null, menuIndex = 0;
 
 function uuid() {
@@ -127,6 +127,14 @@ function turnCard(turn) {
   meta.append((turn.from && turn.from !== 'you' ? turn.from : 'You') + ' · ' + clock(turn.createdAt) + ' · to ' + (everyone ? 'everyone' : turn.targets.map(id => agentOf(id)?.label || id).join(', ')) + (turn.order === 'sequence' ? ' · in turn' : ''));
   const text = el('div', 'you-text'); withMentions(text, turn.kind === 'review' ? 'Cross-review: ' + turn.message : turn.message);
   you.append(meta, text);
+  if (turn.attachments?.length) {
+    const files = el('div', 'you-files');
+    for (const item of turn.attachments) {
+      if (item.image) { const link = el('a', 'shot'); link.href = '/api/file/' + item.id; link.target = '_blank'; link.rel = 'noopener'; const image = el('img'); image.src = link.href; image.alt = item.name; image.loading = 'lazy'; link.append(image); files.append(link); }
+      else files.append(fileChip(item));
+    }
+    you.append(files);
+  }
   const replies = el('div', 'replies'); replies.style.setProperty('--columns', String(Math.min(turn.targets.length, 3)));
   for (const id of turn.targets) replies.append(replyCard(turn, id));
   article.append(you, replies);
@@ -165,17 +173,30 @@ function patchReply(event) {
 // ---------------------------------------------------------------- rail
 function renderRail() {
   $('project-name').textContent = state.project.name;
-  $('conversations').replaceChildren(...[...state.conversations].reverse().map(item => {
-    const row = el('button', 'conversation' + (item.id === state.conversation.id ? ' on' : '')); row.type = 'button';
-    row.append(el('span', '', item.title), el('time', '', day(item.createdAt)));
-    if (state.role === 'owner') {
-      const remove = el('span', 'remove', '×'); remove.title = 'Delete conversation'; remove.setAttribute('role', 'button');
-      remove.addEventListener('click', event => { event.stopPropagation(); if (confirm('Delete "' + item.title + '"? This cannot be undone.')) post('/api/delete', { id: item.id }).catch(fail); });
-      row.append(remove);
+  const rows = [...state.conversations].reverse();
+  const sections = [];
+  const pinned = rows.filter(item => item.pinned);
+  if (pinned.length) sections.push(['Pinned', pinned]);
+  for (const group of [...new Set(rows.filter(item => !item.pinned && item.group).map(item => item.group))].sort((x, y) => x.localeCompare(y))) sections.push([group, rows.filter(item => !item.pinned && item.group === group)]);
+  const rest = rows.filter(item => !item.pinned && !item.group);
+  if (rest.length) sections.push(['Conversations', rest]);
+  const nodes = [];
+  for (const [label, items] of sections) {
+    nodes.push(el('p', 'rail-label', label));
+    for (const item of items) {
+      const row = el('div', 'conversation' + (item.id === state.conversation.id ? ' on' : '')); row.setAttribute('role', 'button'); row.tabIndex = 0; row.dataset.id = item.id;
+      if (item.pinned) row.append(el('span', 'pin', '●'));
+      row.append(el('span', '', item.title), el('time', '', day(item.createdAt)));
+      const more = el('button', 'more', '···'); more.type = 'button'; more.title = 'Rename, pin, group'; more.setAttribute('aria-label', 'Manage conversation');
+      more.addEventListener('click', event => { event.stopPropagation(); openMenu(item, row, more); });
+      row.append(more);
+      const open = () => { if (item.id !== state.conversation.id) post('/api/switch', { id: item.id }).then(() => setView('chat')).catch(fail); else setView('chat'); };
+      row.addEventListener('click', event => { if (event.target.tagName !== 'INPUT') open(); });
+      row.addEventListener('keydown', event => { if (event.key === 'Enter' && event.target === row) open(); });
+      nodes.push(row);
     }
-    row.addEventListener('click', () => { if (item.id !== state.conversation.id) post('/api/switch', { id: item.id }).then(() => setView('chat')).catch(fail); });
-    return row;
-  }));
+  }
+  $('conversations').replaceChildren(...nodes);
   $('seats').replaceChildren(...state.agents.map(agent => {
     const row = tint(el('div', 'seat' + (agent.ready ? '' : ' off')), agent.id), text = el('div');
     const live = state.active ? state.conversation.turns.find(turn => turn.id === state.active)?.replies[agent.id]?.status : null;
@@ -187,6 +208,35 @@ function renderRail() {
     return row;
   }));
   $('phone-open').hidden = state.role !== 'owner';
+}
+
+function closeMenu() { $('conversation-menu').hidden = true; document.querySelector('.conversation.menu-open')?.classList.remove('menu-open'); }
+function renameInline(item) {
+  const row = document.querySelector('.conversation[data-id="' + item.id + '"]'); if (!row) return;
+  const input = el('input'); input.value = item.title; input.maxLength = 80; input.setAttribute('aria-label', 'Conversation name');
+  row.querySelector('span:not(.pin)').replaceWith(input); input.focus(); input.select();
+  let finished = false;
+  const finish = save => { if (finished) return; finished = true; const title = input.value.trim(); if (save && title && title !== item.title) post('/api/conversation', { id: item.id, title }).catch(fail); else renderRail(); };
+  input.addEventListener('keydown', event => { event.stopPropagation(); if (event.key === 'Enter') finish(true); if (event.key === 'Escape') finish(false); });
+  input.addEventListener('blur', () => finish(true));
+}
+function openMenu(item, row, anchor) {
+  closeMenu();
+  const menu = $('conversation-menu'), add = (label, action, cls) => { const button = el('button', cls || '', label); button.type = 'button'; button.setAttribute('role', 'menuitem'); button.addEventListener('click', () => { closeMenu(); action(); }); menu.append(button); return button; };
+  const change = value => post('/api/conversation', { id: item.id, ...value }).catch(fail);
+  menu.replaceChildren();
+  add('Rename', () => renameInline(item));
+  add(item.pinned ? 'Unpin' : 'Pin to top', () => change({ pinned: !item.pinned }));
+  menu.append(el('hr'), el('p', '', 'Group'));
+  for (const group of [...new Set(state.conversations.map(entry => entry.group).filter(Boolean))].sort()) add(group, () => change({ group }), item.group === group ? 'on' : '');
+  add('New group…', () => { const name = prompt('Name of the new group'); if (name && name.trim()) change({ group: name }); });
+  if (item.group) add('Remove from group', () => change({ group: '' }));
+  if (state.role === 'owner') { menu.append(el('hr')); add('Delete', () => { if (confirm('Delete "' + item.title + '"? This cannot be undone.')) post('/api/delete', { id: item.id }).catch(fail); }, 'danger'); }
+  menu.hidden = false; row.classList.add('menu-open');
+  const box = anchor.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(box.left, innerWidth - menu.offsetWidth - 8)) + 'px';
+  menu.style.top = Math.min(box.bottom + 4, innerHeight - menu.offsetHeight - 8) + 'px';
+  menu.querySelector('button').focus();
 }
 
 // ---------------------------------------------------------------- board
@@ -221,6 +271,37 @@ function renderBoard() {
   }));
 }
 
+// ---------------------------------------------------------------- attachments
+const sizeOf = bytes => (bytes >= 1048576 ? (bytes / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(bytes / 1024)) + ' KB');
+function fileChip(item, onRemove) {
+  const chip = el(onRemove ? 'div' : 'a', 'file' + (item.busy ? ' busy' : ''));
+  if (!onRemove) { chip.href = '/api/file/' + item.id; chip.target = '_blank'; chip.rel = 'noopener'; }
+  if (item.image && item.id) { const image = el('img'); image.src = '/api/file/' + item.id; image.alt = ''; chip.append(image); }
+  else chip.append(el('i', 'ext', (item.name.split('.').pop() || 'file').slice(0, 4)));
+  chip.append(el('span', '', item.name), el('small', '', item.busy ? 'uploading' : sizeOf(item.size)));
+  if (onRemove) { const remove = el('button', '', '×'); remove.type = 'button'; remove.title = 'Remove'; remove.addEventListener('click', onRemove); chip.append(remove); }
+  return chip;
+}
+function renderPending() {
+  $('pending').hidden = !pending.length;
+  $('pending').replaceChildren(...pending.map(item => fileChip(item, () => { pending = pending.filter(other => other !== item); renderPending(); })));
+}
+async function addFiles(files) {
+  fail('');
+  for (const file of [...files].slice(0, Math.max(0, 10 - pending.length))) {
+    if (file.size > 15 * 1048576) { fail('"' + file.name + '" is larger than 15 MB.'); continue; }
+    const item = { name: file.name || 'pasted-image.png', size: file.size, busy: true };
+    pending.push(item); renderPending();
+    try {
+      const response = await fetch('/api/upload', { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-File-Name': encodeURIComponent(item.name) }, body: file });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Upload failed.');
+      Object.assign(item, result, { busy: false });
+    } catch (error) { pending = pending.filter(other => other !== item); fail(error); }
+    renderPending();
+  }
+}
+
 // ---------------------------------------------------------------- composer
 function renderComposer() {
   const busy = !!state.active;
@@ -238,7 +319,7 @@ function renderComposer() {
   $('review').hidden = state.agents.length < 2; $('review').disabled = !canReview;
   $('send').hidden = busy; $('cancel').hidden = !busy;
   $('new').disabled = busy;
-  $('hint').textContent = busy ? 'Agents are working. You can stop them.' : state.demo ? 'Demo mode: replies are scripted, no model is called.' : 'Type @ to address one agent. Shift+Enter for a new line.';
+  $('hint').textContent = busy ? 'Agents are working. You can stop them.' : state.demo ? 'Demo mode: replies are scripted, no model is called.' : 'Type @ to address one agent. Paste or drop files and images.';
   $('message').placeholder = selected.size ? 'Message ' + [...selected].map(id => agentOf(id).label).join(' and ') + '…' : 'Message everyone, or @mention one agent…';
 }
 function resize() { const box = $('message'); box.style.height = 'auto'; box.style.height = Math.min(box.scrollHeight, 220) + 'px'; }
@@ -270,11 +351,11 @@ function pickMention(id) {
 }
 async function sendMessage(kind = 'message') {
   const box = $('message'), message = box.value.trim();
-  if (state.active || (kind === 'message' && !message)) return;
+  if (state.active || pending.some(item => item.busy) || (kind === 'message' && !message && !pending.length)) return;
   fail(''); requestId ??= uuid();
   try {
-    await post('/api/message', { clientId: requestId, message: kind === 'review' ? '' : message, kind, targets: kind === 'review' ? [] : [...selected], order, brief: $('brief').value });
-    if (kind === 'message') { box.value = ''; resize(); }
+    await post('/api/message', { clientId: requestId, message: kind === 'review' ? '' : message, kind, targets: kind === 'review' ? [] : [...selected], order, attachments: kind === 'review' ? [] : pending.map(item => item.id), brief: $('brief').value });
+    if (kind === 'message') { box.value = ''; resize(); pending = []; renderPending(); }
     requestId = null; setView('chat');
     const transcript = $('transcript'); transcript.scrollTop = transcript.scrollHeight;
   } catch (error) { fail(error); }
@@ -357,8 +438,9 @@ function connect() {
 }
 function showPairing(text, steps) { $('app').hidden = true; $('tabs').hidden = true; $('pairing').hidden = false; $('pairing-text').textContent = text; $('pairing-steps').hidden = !steps; }
 async function start() {
-  const theme = localStorage.getItem('st-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  document.documentElement.dataset.theme = theme;
+  let theme = null, accent = '';
+  try { theme = localStorage.getItem('st-theme'); accent = localStorage.getItem('st-accent') || ''; } catch { /* private mode */ }
+  applyLook(THEMES.some(item => item[0] === theme) ? theme : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light', accent);
   const token = /[#&]pair=([\w-]+)/.exec(location.hash)?.[1];
   if (token) {
     history.replaceState(null, '', location.pathname);
@@ -386,12 +468,49 @@ $('message').addEventListener('keydown', event => {
   }
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !matchMedia('(max-width: 980px)').matches) { event.preventDefault(); sendMessage(); }
 });
+$('attach').addEventListener('click', () => $('file-input').click());
+$('file-input').addEventListener('change', event => { addFiles(event.target.files); event.target.value = ''; });
+$('message').addEventListener('paste', event => { const files = [...(event.clipboardData?.files || [])]; if (files.length) { event.preventDefault(); addFiles(files); } });
+let dragDepth = 0;
+const hasFiles = event => [...(event.dataTransfer?.types || [])].includes('Files');
+$('chat').addEventListener('dragenter', event => { if (hasFiles(event)) { event.preventDefault(); dragDepth++; $('drop-hint').hidden = false; } });
+$('chat').addEventListener('dragover', event => { if (hasFiles(event)) event.preventDefault(); });
+$('chat').addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) $('drop-hint').hidden = true; });
+$('chat').addEventListener('drop', event => { if (!hasFiles(event)) return; event.preventDefault(); dragDepth = 0; $('drop-hint').hidden = true; addFiles(event.dataTransfer.files); });
 $('review').addEventListener('click', () => sendMessage('review'));
 $('cancel').addEventListener('click', () => post('/api/cancel').catch(fail));
 $('new').addEventListener('click', () => post('/api/new').then(() => { setView('chat'); $('message').focus(); }).catch(fail));
 $('brief').addEventListener('input', () => { clearTimeout(briefTimer); $('brief-state').textContent = 'saving…'; briefTimer = setTimeout(() => post('/api/brief', { brief: $('brief').value }).then(() => { $('brief-state').textContent = 'saved'; }).catch(fail), 600); });
 $('add-entry').addEventListener('submit', event => { event.preventDefault(); const text = $('entry-text').value.trim(); if (!text) return; post('/api/board', { op: 'add', kind: $('entry-kind').value, text }).then(() => { $('entry-text').value = ''; }).catch(fail); });
-$('theme').addEventListener('click', () => { const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = next; localStorage.setItem('st-theme', next); });
+const THEMES = [['light', 'Day', '#f4f1ea', '#1b1a17'], ['dark', 'Night', '#0f100e', '#f2efe7'], ['crimson', 'Crimson', '#0f0b07', '#d31414'], ['parchment', 'Parchment', '#f4e8d0', '#8b2a2a'], ['midnight', 'Midnight', '#0b1020', '#7c9cff']];
+const ACCENTS = [['', 'Theme default', 'var(--ink)'], ['crimson', 'Crimson', '#d31414'], ['gold', 'Gold', '#c9a84c'], ['blue', 'Blue', '#4f6bed'], ['green', 'Green', '#1f9d74'], ['violet', 'Violet', '#7a5af5']];
+function applyLook(theme, accent) {
+  const root = document.documentElement;
+  root.dataset.theme = theme; if (accent) root.dataset.accent = accent; else delete root.dataset.accent;
+  try { localStorage.setItem('st-theme', theme); localStorage.setItem('st-accent', accent || ''); } catch { /* private mode */ }
+  document.querySelector('meta[name=theme-color]').content = THEMES.find(item => item[0] === theme)?.[2] || '#0f100e';
+}
+function openAppearance() {
+  const menu = $('appearance-menu'), root = document.documentElement;
+  if (!menu.hidden) { menu.hidden = true; return; }
+  const draw = () => {
+    menu.replaceChildren(el('p', '', 'Theme'));
+    for (const [id, label, a, b] of THEMES) {
+      const button = el('button', root.dataset.theme === id ? 'on' : ''); button.type = 'button';
+      const preview = el('span', 'preview'); preview.style.setProperty('--a', a); preview.style.setProperty('--b', b);
+      button.append(preview, label); button.addEventListener('click', () => { applyLook(id, ''); draw(); }); menu.append(button);
+    }
+    menu.append(el('hr'), el('p', '', 'Accent colour'));
+    const row = el('div', 'swatches');
+    for (const [id, label, color] of ACCENTS) { const dot = el('button', (root.dataset.accent || '') === id ? 'on' : ''); dot.type = 'button'; dot.title = label; dot.setAttribute('aria-label', label); dot.style.setProperty('--swatch', color); dot.addEventListener('click', () => { applyLook(root.dataset.theme, id); draw(); }); row.append(dot); }
+    menu.append(row);
+  };
+  draw(); menu.hidden = false;
+  const box = $('theme').getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(box.left, innerWidth - menu.offsetWidth - 8)) + 'px';
+  menu.style.top = Math.max(8, box.top - menu.offsetHeight - 6) + 'px';
+}
+$('theme').addEventListener('click', event => { event.stopPropagation(); openAppearance(); });
 $('order').addEventListener('click', event => { const button = event.target.closest('button'); if (!button) return; order = button.dataset.order; for (const item of $('order').children) item.classList.toggle('on', item === button); });
 $('tabs').addEventListener('click', event => { const button = event.target.closest('button'); if (button) setView(button.dataset.view); });
 $('phone-open').addEventListener('click', () => { $('phone').showModal(); renderPhone(); refreshQR(); });
@@ -399,4 +518,6 @@ $('phone').addEventListener('close', () => clearTimeout(pairTimer));
 $('lan-toggle').addEventListener('change', event => setRemote({ lan: event.target.checked }, $('lan-option')));
 $('tunnel-toggle').addEventListener('change', event => setRemote({ tunnel: event.target.checked }, $('tunnel-option')));
 $('qr-switch').addEventListener('click', event => { const button = event.target.closest('button'); if (button) { pairVia = button.dataset.via; refreshQR(); } });
+document.addEventListener('click', event => { if (!event.target.closest('#conversation-menu')) closeMenu(); if (!event.target.closest('#appearance-menu')) $('appearance-menu').hidden = true; });
+document.addEventListener('keydown', event => { if (event.key === 'Escape') { closeMenu(); $('appearance-menu').hidden = true; } });
 start().catch(error => showPairing('Could not reach Shared Table: ' + error.message));

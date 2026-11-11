@@ -22,6 +22,7 @@
   <a href="#agents">Agents</a> ·
   <a href="#continue-on-your-phone">Phone</a> ·
   <a href="#configuration">Configuration</a> ·
+  <a href="docs/ROADMAP.md">Roadmap</a> ·
   <a href="SECURITY.md">Security</a>
 </p>
 
@@ -46,6 +47,8 @@ Shared Table is a bridge. You type once. Every agent you addressed starts workin
 - **A shared table.** Agents post decisions, tasks, risks and open questions to a board. You can add, tick off and remove entries. Every agent sees the board with every message.
 - **Cross-review.** One click asks each agent to review the others' last answers and converge on one plan.
 - **Three levels of trust.** `advise` (no tools), `read` (agents can read your project), `build` (agents can edit files and run commands).
+- **Files and images.** Paste, drop or attach screenshots and files in the chat. Text files travel inside the prompt; images go to Claude Code, Codex and vision-capable API models.
+- **Organised.** Rename, pin and group conversations. Five themes and six accent colours.
 - **Your phone, same chat.** Scan a QR code and continue on your phone, on the same Wi-Fi or from anywhere.
 
 ## Demo
@@ -54,7 +57,7 @@ Shared Table is a bridge. You type once. Every agent you addressed starts workin
   <a href="docs/assets/shared-table-demo.mp4"><img src="docs/assets/video-poster.png" alt="Shared Table demo video" width="100%"></a>
 </p>
 
-<p align="center"><sub>Click to play the 42-second walkthrough (<a href="docs/assets/shared-table-demo.mp4">docs/assets/shared-table-demo.mp4</a>). Recorded in demo mode: the agent replies in the video are scripted.</sub></p>
+<p align="center"><sub>Click to play the 41-second walkthrough (<a href="docs/assets/shared-table-demo.mp4">docs/assets/shared-table-demo.mp4</a>). Recorded in demo mode: the agent replies in the video are scripted.</sub></p>
 
 ## Quick start
 
@@ -136,6 +139,18 @@ In `build` mode every agent works in the same folder. They are told who else is 
   <img src="docs/assets/screenshot-in-turn.png" alt="An in-turn message: Claude answers first, then Codex reviews Claude's work" width="100%">
 </p>
 
+## Files and images
+
+Paste from the clipboard, drop onto the chat, or use the paperclip. Up to 10 files per message, 15 MB each.
+
+| File | How it reaches the agents |
+|---|---|
+| Text and code (up to 200 KB) | Included in full in the prompt, for every agent. |
+| Images (PNG, JPEG, GIF, WebP) | Claude Code opens them with its Read tool; Codex receives them with `--image`; API agents receive them in the OpenAI vision format. |
+| Anything else (PDF and so on) | Saved next to the conversation and handed over by path. Claude Code can open it in any mode; other agents need `read` or `build` mode. |
+
+Links are sent as text. In `advise` mode agents have no web access, so they see the address, not the page.
+
 ## Agents
 
 | Agent | CLI | Status |
@@ -205,6 +220,15 @@ Choose **Phone** in the sidebar, switch on a connection, scan the code. The phon
 
 Only a device that scans a code can connect. A code works once and expires after ten minutes. A paired phone can chat, stop a run and edit the board; it cannot change phone access or delete conversations. Remove a device in the same dialog to cut it off. On the phone, "Add to Home Screen" gives you a full-screen app icon.
 
+## Themes
+
+Five themes (Day, Night, Crimson, Parchment, Midnight) and six accent colours, from the moon button in the sidebar. The choice is kept per browser.
+
+<p align="center">
+  <img src="docs/assets/screenshot-crimson.png" alt="Crimson theme" width="49%">
+  <img src="docs/assets/screenshot-light.png" alt="Day theme" width="49%">
+</p>
+
 ## Configuration
 
 Settings come from, in rising priority: defaults, `shared-table.config.json` in the project folder, `SHARED_TABLE_*` environment variables, command-line flags. A commented example is in [shared-table.config.example.json](shared-table.config.example.json).
@@ -238,6 +262,7 @@ Stated plainly, because an agent bridge that overstates itself is worse than non
 | Both agents in one real turn | Tested: Claude answered while Codex returned its usage-limit error in the same turn, and neither blocked the other (screenshot below). |
 | Gemini CLI, custom CLI agents | Argument building is unit-tested. Real runs NOT TESTED. |
 | API agents (LM Studio, Ollama, other OpenAI-compatible servers) | Streaming, key handling and failure reporting tested against a local stand-in server. NOT TESTED against LM Studio, Ollama or RegesARC themselves. |
+| Attachments | **Tested with real Claude Code:** it described an attached image and quoted an attached text file. Codex `--image` and API vision input are NOT TESTED. |
 | Phone pairing | Tested in a browser at phone size over the Wi-Fi listener and the phone listener, and the QR code was decoded by Chrome's barcode reader. NOT TESTED on a physical phone. |
 | Tunnels (cloudflared, localhost.run) | NOT TESTED. The pairing and permission logic behind them is covered by tests with a stand-in tunnel. |
 | Windows, Linux | NOT TESTED. |
@@ -250,7 +275,7 @@ Stated plainly, because an agent bridge that overstates itself is worse than non
 <p align="center"><sub>A real run, not demo mode: Claude Code read <code>src/runner.mjs</code> and answered; Codex returned its account's usage limit, shown as-is.</sub></p>
 
 ```bash
-npm test     # 12 tests, mock agents, no model requests
+npm test     # 14 tests, mock agents, no model requests
 ```
 
 ## Limits worth knowing
@@ -280,6 +305,10 @@ scripts/capture.mjs      regenerates the screenshots and the demo video
 ## Where it came from
 
 Shared Table began as two small private tools written for one project: a local page that sent the same message to Codex and Claude and showed both answers. This repository merges them and makes the idea general: any project, any number of agents, real sessions, a shared board, and a phone.
+
+## Roadmap
+
+Next up: approvals in the chat, per-agent stop, a changes panel with one git worktree per agent, and a terminal panel. The full plan is in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Contributing and security
 
