@@ -89,24 +89,28 @@ const short = value => String(value ?? '').replace(/\s+/g, ' ').slice(0, 140);
 const claude = {
   id: 'claude', label: 'Claude', vendor: 'Claude Code', format: 'jsonl',
   resumeCommand: (id, folder) => 'cd ' + JSON.stringify(folder) + ' && claude --resume ' + id,
+  approvals: true,
   find: (config, env) => findExecutable('claude', { configured: config.claudePath, env, extra: claudeLocations(env) }),
   install: 'Install Claude Code, then run: claude auth login',
   args({ mode, config, policy, session, attachments = [], attachmentDir }) {
     // Files that are not inlined as text (images, PDFs) are opened by Claude with its Read tool.
     const files = attachments.some(item => !item.inline);
-    const args = ['--permission-prompts', 'none', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
+    // Build mode with approvals: Claude asks the supervisor through the chat before anything that is not a plain file edit.
+    const ask = mode === 'build' && config.approvals !== 'deny';
+    const args = [...(ask ? ['--input-format', 'stream-json', '--permission-prompt-tool', 'stdio'] : ['--permission-prompts', 'none']), '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
     // Own session: the first turn names it, later turns resume it, so Claude keeps its own working memory.
     if (session) args.push(...(session.resume ? ['--resume', session.id] : ['--session-id', session.id]));
     else args.push('--no-session-persistence', '--session-id', randomUUID());
-    // Build mode runs Claude Code's full harness (project CLAUDE.md, user settings, MCP servers). Other modes are sealed.
-    if (mode !== 'build') args.push('--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--disable-slash-commands', '--no-chrome');
+    // Build mode keeps the project's own instructions (CLAUDE.md). Your personal MCP servers, plugins and slash commands are
+    // loaded only with the "full harness" setting, because they add a lot of context to every request.
+    if (mode !== 'build' || !config.fullHarness) args.push('--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--disable-slash-commands', '--no-chrome');
     if (config.claudeModel) args.push('--model', config.claudeModel);
     if (files) args.push('--add-dir', attachmentDir);
     if (mode === 'advise') args.push('--safe-mode', '--restricted', '--setting-sources', '', '--tools', files ? 'Read' : '', ...(files ? ['--allowedTools', 'Read'] : []), '--permission-mode', 'dontAsk', '--system-prompt', policy);
     else if (mode === 'read') args.push('--safe-mode', '--restricted', '--setting-sources', '', '--tools', 'Read,Glob,Grep', '--allowedTools', 'Read,Glob,Grep', '--permission-mode', 'dontAsk', '--append-system-prompt', policy);
-    else args.push('--allowedTools', 'Read,Glob,Grep,Edit,Write,Bash', '--permission-mode', 'acceptEdits', '--append-system-prompt', policy);
+    else args.push('--allowedTools', ask ? 'Read,Glob,Grep,Edit,Write' : 'Read,Glob,Grep,Edit,Write,Bash', '--permission-mode', ask ? 'manual' : 'acceptEdits', '--append-system-prompt', policy);
     args.push('-p');
-    return { args, stdin: true };
+    return { args, stdin: true, protocol: ask ? 'claude-stream' : 'plain' };
   },
   async auth(file, env, cwd) {
     try {
@@ -137,6 +141,12 @@ const claude = {
     if (event.type === 'result') {
       if (event.is_error || event.subtype !== 'success') state.error = safeError(event.result || event.errors?.join('\n') || event.subtype);
       else if (typeof event.result === 'string' && event.result.trim()) { state.text = event.result; state.changed = true; }
+      const usage = event.usage || {};
+      state.usage = { input: (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0), output: usage.output_tokens || 0, ...(typeof event.total_cost_usd === 'number' ? { costUsd: event.total_cost_usd } : {}) };
+    }
+    if (event.type === 'rate_limit_event' && event.rate_limit_info) {
+      const info = event.rate_limit_info, window = info.unifiedWindows?.[info.rateLimitType];
+      state.limit = { status: info.status, window: String(info.rateLimitType || '').replace(/_/g, ' '), resetsAt: info.resetsAt ? new Date(info.resetsAt * 1000).toISOString() : null, ...(typeof window?.utilization === 'number' ? { used: window.utilization } : {}) };
     }
   },
 };
@@ -146,6 +156,7 @@ const CODEX_OFF = ['apps', 'plugins', 'remote_plugin', 'hooks', 'multi_agent', '
 const codex = {
   id: 'codex', label: 'Codex', vendor: 'Codex CLI', format: 'jsonl',
   resumeCommand: (id, folder) => 'cd ' + JSON.stringify(folder) + ' && codex resume ' + id,
+  approvals: false,
   find: (config, env) => findExecutable('codex', { configured: config.codexPath, env, extra: codexLocations(env) }),
   install: 'Install the Codex CLI (npm install -g @openai/codex), then run: codex login',
   args({ mode, config, policy, session, attachments = [] }) {
@@ -186,6 +197,7 @@ const codex = {
     }
     if (event.type === 'item.completed' && item?.type === 'agent_message') { state.text += (state.text ? '\n\n' : '') + item.text; state.changed = true; }
     if (event.type === 'turn.failed' || event.type === 'error') state.error = safeError(event.error?.message || event.message || 'Codex request failed.');
+    if (event.type === 'turn.completed' && event.usage) state.usage = { input: (event.usage.input_tokens || 0), output: event.usage.output_tokens || 0 };
   },
 };
 

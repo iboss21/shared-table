@@ -84,6 +84,7 @@ const record = !shotsOnly;
 const desk = await openPage(table.origin, { width: 1440, height: 900, scale: record ? 4 / 3 : 2 });
 console.log('Capturing…');
 
+await desk.evaluate(`localStorage.setItem('st-pet', 'flick'); window.SharedTablePet.choose('flick');`);
 caption = 'One chat. Every coding agent you use, side by side.';
 if (record) await frame(desk, 1600);
 caption = 'Write once. Claude Code and Codex both start, each in its own session.';
@@ -122,6 +123,11 @@ await phone.shot('screenshot-mobile-chat.png');
 await phone.evaluate(`document.querySelector('#tabs [data-view=board]').click();`);
 await sleep(400);
 await phone.shot('screenshot-mobile-table.png');
+
+await desk.evaluate(`document.getElementById('phone').close(); document.getElementById('settings-open').click();`);
+await sleep(600);
+await desk.shot('screenshot-settings.png');
+await desk.evaluate(`document.getElementById('settings').close();`);
 
 // Light theme, for the README.
 // Headless Chrome does not advance CSS transitions between screenshots, so switch them off before changing theme.

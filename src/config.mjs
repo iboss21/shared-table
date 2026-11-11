@@ -11,6 +11,11 @@ export const defaults = {
   projectDir: '',
   mode: 'advise', // 'advise' = no tools; 'read' = agents may read the project; 'build' = agents may edit it
   sessions: '', // 'native' (default) = each agent keeps its own CLI session per conversation, resumable in its own app; 'stateless' = fresh run every turn
+  isolation: 'shared', // 'shared' = agents edit the project folder; 'worktree' = each agent gets its own git worktree (build mode)
+  approvals: 'ask', // 'ask' = permission requests appear in the chat; 'deny' = anything that would ask is refused
+  terminal: true, // the command panel on the host computer
+  fullHarness: false, // also load your personal MCP servers, plugins and slash commands into Claude Code in build mode
+  phoneApprovals: true, // paired phones may answer permission requests
   agents: '', // comma-separated ids; empty = claude, codex, plus gemini and custom agents when available
   port: 4783,
   dataDir: '',
@@ -37,11 +42,11 @@ const ENV = {
 };
 
 const FLAGS = {
-  '--name': 'name', '--brief': 'brief', '--project': 'projectDir', '--mode': 'mode', '--sessions': 'sessions', '--agents': 'agents', '--gemini-path': 'geminiPath', '--gemini-model': 'geminiModel', '--port': 'port', '--data-dir': 'dataDir',
+  '--name': 'name', '--brief': 'brief', '--project': 'projectDir', '--mode': 'mode', '--isolation': 'isolation', '--approvals': 'approvals', '--sessions': 'sessions', '--agents': 'agents', '--gemini-path': 'geminiPath', '--gemini-model': 'geminiModel', '--port': 'port', '--data-dir': 'dataDir',
   '--claude-path': 'claudePath', '--codex-path': 'codexPath', '--claude-model': 'claudeModel', '--codex-model': 'codexModel',
   '--timeout': 'timeoutSeconds', '--public-url': 'publicUrl',
 };
-const SWITCHES = { '--lan': 'lan', '--tunnel': 'tunnel', '--demo': 'demo', '--open': 'open', '--allow-api-keys': 'allowApiKeys' };
+const SWITCHES = { '--full-harness': 'fullHarness', '--lan': 'lan', '--tunnel': 'tunnel', '--demo': 'demo', '--open': 'open', '--allow-api-keys': 'allowApiKeys' };
 
 const coerce = (key, value) => {
   if (typeof defaults[key] === 'boolean') return value === true || /^(1|true|yes|on)$/i.test(String(value));
@@ -65,6 +70,12 @@ export function parseArgs(argv) {
   return out;
 }
 
+/** Where one project's conversations live under the data root. */
+export function projectDataDir(root, projectDir) {
+  const slug = path.basename(projectDir).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'project';
+  return path.join(root, 'projects', slug + '-' + createHash('sha256').update(projectDir).digest('hex').slice(0, 8));
+}
+
 /** defaults < config file < environment < command-line flags */
 export function loadConfig({ argv = [], env = process.env, cwd = process.cwd() } = {}) {
   const args = parseArgs(argv);
@@ -84,14 +95,16 @@ export function loadConfig({ argv = [], env = process.env, cwd = process.cwd() }
   if (!config.name) config.name = path.basename(config.projectDir) || 'Project';
   if (!['advise', 'read', 'build'].includes(config.mode)) throw new Error('mode must be "advise", "read" or "build".');
   config.customAgents ||= [];
+  if (!['shared', 'worktree'].includes(config.isolation)) throw new Error('isolation must be "shared" or "worktree".');
+  if (!['ask', 'deny'].includes(config.approvals)) throw new Error('approvals must be "ask" or "deny".');
   if (!config.sessions) config.sessions = 'native';
   if (!['native', 'stateless'].includes(config.sessions)) throw new Error('sessions must be "native" or "stateless".');
   if (!Number.isSafeInteger(config.port) || config.port < 0 || config.port > 65535) throw new Error('Invalid port.');
   if (!config.timeoutSeconds) config.timeoutSeconds = config.mode === 'build' ? 900 : config.mode === 'read' ? 420 : 180;
+  config.dataRoot = config.dataDir ? path.resolve(cwd, config.dataDir) : path.join(os.homedir(), '.shared-table');
+  config.dataDirExplicit = !!config.dataDir;
   if (!config.dataDir) {
-    const slug = config.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'project';
-    const hash = createHash('sha256').update(config.projectDir).digest('hex').slice(0, 8);
-    config.dataDir = path.join(os.homedir(), '.shared-table', 'projects', slug + '-' + hash);
+    config.dataDir = projectDataDir(config.dataRoot, config.projectDir);
   } else config.dataDir = path.resolve(cwd, config.dataDir);
   config.help = !!args.help;
   config.version = !!args.version;
@@ -110,6 +123,10 @@ Options
   --sessions <kind>      native: each agent keeps its own CLI session per conversation, which you can
                                  also open in that agent's own app (default)
                          stateless: a fresh run every turn, nothing saved by the CLIs
+  --isolation <kind>     shared: agents edit the project folder (default)
+                         worktree: each agent edits its own git worktree; you apply the result
+  --approvals ask|deny   ask: permission requests appear in the chat (default); deny: refuse them
+  --full-harness         build mode: also load your personal MCP servers and plugins into Claude Code
   --agents <ids>         comma-separated agents to seat, for example claude,codex,gemini,lmstudio,ollama
   --name <text>          project name shown in the interface
   --brief <text>         starting brief sent to both agents

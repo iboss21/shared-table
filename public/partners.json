@@ -1,0 +1,36 @@
+[
+  { "name": "LIKE A KING INC.", "url": "https://likeakinginc.com", "live": true, "group": "Company", "text": "The company behind Shared Table: AI engineering, cloud, cybersecurity and digital platforms." },
+  { "name": "Davidio / Dev", "url": "https://davidio.dev", "live": true, "group": "Company", "text": "Web development and AI integrations: fast websites, e-commerce platforms and custom builds." },
+
+  { "name": "Reges", "url": "https://regescore.pro", "live": true, "group": "RegesCore", "text": "Your AI, on your machine: a private assistant that sees, listens and does the work on your own computer." },
+  { "name": "Reges Code", "url": "https://regescode.com", "live": true, "group": "RegesCore", "text": "A free, local-first AI code editor: local models first, with automatic free-model fallback." },
+  { "name": "RegesARC", "url": "https://regesarc.com", "live": true, "group": "RegesCore", "text": "A local AI workstation in development for model loading, agent workflows, MCP tools and creative work." },
+
+  { "name": "AnimatedWebs", "url": "https://animatedwebs.com", "live": true, "group": "Web and motion", "text": "Animated website templates you can play first, then copy the build prompt into your AI tool." },
+  { "name": "MotionVault", "url": "https://motionvault.site", "live": true, "group": "Web and motion", "text": "Describe your business in one sentence and get a cinematic website, written and built for you." },
+  { "name": "TrustCertia", "url": "https://trustcertia.com", "live": true, "group": "Web and motion", "text": "Transparent website trust profiles: automated checks, honest AI disclosures and live certificates." },
+  { "name": "First Sale Scout", "url": "https://firstsale.pro", "live": true, "group": "Web and motion", "text": "See how products like yours won their first paying customers, and where your buyers are talking this week." },
+
+  { "name": "Millicent", "url": "https://heymillicent.com", "live": true, "group": "AI products", "text": "An AI sidekick with a personality and a memory. Live today in Discord." },
+  { "name": "WalkCue", "url": "https://walkcue.com", "live": true, "group": "AI products", "text": "Turns camera glasses or a phone camera into short spoken cues for blind and low-vision people." },
+  { "name": "ReadySeen", "url": "https://readyseen.com", "live": true, "group": "AI products", "text": "Track a spot with photos, tell your story in your own language, and bring a one-page brief to your clinician." },
+  { "name": "CreditFixExpert", "url": "https://creditfixexpert.com", "live": true, "group": "AI products", "text": "Upload a credit report; it finds what is inaccurate, incomplete or unverifiable and drafts the dispute." },
+  { "name": "BIOS Advisor", "url": "https://biosadvisor.com", "live": true, "group": "AI products", "text": "Scans your PC and tells you how its BIOS should be set up." },
+  { "name": "Tbili", "url": "https://tbilipay.com", "live": true, "group": "AI products", "text": "Money without borders: send money from the US to Georgia at live mid-market rates with one clear fee." },
+
+  { "name": "The Lux Empire / LXRCore", "url": "https://www.lxrcore.com", "live": true, "group": "Games", "text": "Premium FiveM and RedM server resources, and the LXRCore framework." },
+  { "name": "Wolves 1905", "url": "https://wolves.land", "live": true, "group": "Games", "text": "A serious-roleplay RedM server set in 1905." },
+
+  { "name": "FiftyField", "url": "https://fiftyfield.com", "live": true, "group": "Brands and client work", "text": "Premium American apparel inspired by cities, mountains, roads and coastlines." },
+  { "name": "Clarté", "url": "https://theclarte.pro", "live": true, "group": "Brands and client work", "text": "Private luxury home care, with a room-by-room scope." },
+  { "name": "FixItFast.NYC", "url": "https://fixitfast.nyc", "live": true, "group": "Brands and client work", "text": "Home repairs and urgent calls: TV mounting, security cameras, smart home, electrical." },
+  { "name": "Frei Company", "url": "https://freicompany.ge", "live": true, "group": "Brands and client work", "text": "Certified translation and notary services." },
+
+  { "name": "CHVENIA", "url": "https://chvenia.com", "live": false, "group": "Coming soon", "text": "Fashion label. In private preview." },
+  { "name": "AI Fights", "url": "https://ai-fights.com", "live": false, "group": "Coming soon", "text": "Two minds, one arena." },
+  { "name": "Play My Room", "url": "https://playmyroom.com", "live": false, "group": "Coming soon", "text": "Turn your room into a game." },
+  { "name": "AI Art Drop", "url": "https://aiartdrop.com", "live": false, "group": "Coming soon", "text": "Domain reserved; product not announced yet." },
+  { "name": "Genatsvale", "url": "https://genatsvale.shop", "live": false, "group": "Coming soon", "text": "Domain reserved; product not announced yet." },
+  { "name": "Govelora", "url": "https://govelora.com", "live": false, "group": "Coming soon", "text": "Domain reserved; product not announced yet." },
+  { "name": "This Night", "url": "https://thisnight.online", "live": false, "group": "Coming soon", "text": "Domain reserved; product not announced yet." }
+]

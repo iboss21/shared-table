@@ -22,20 +22,20 @@ Release 0.1 addresses 1, 2, 3 and 5. Number 4 is the top item below.
 
 ## Shipped in 0.1
 
-One chat with `@mentions`; at-once, in-turn and cross-review turns; native per-agent CLI sessions; shared board; advise / read / build modes; Claude Code, Codex, Gemini CLI, API servers (LM Studio, Ollama, any OpenAI-compatible endpoint) and custom CLIs; file and image attachments; conversation rename, pin and groups; themes; phone access by QR over Wi-Fi or tunnel; demo mode.
+One chat with `@mentions`; at-once, in-turn and cross-review turns; native per-agent CLI sessions; shared board; advise / read / build modes; Claude Code, Codex, Gemini CLI, API servers (LM Studio, Ollama, any OpenAI-compatible endpoint) and custom CLIs; file and image attachments; approvals in the chat (Claude Code); per-agent stop and retry; Changes tab with diff and revert; one git worktree per agent; Commands tab; Preview tab; project switcher; usage meter; notifications; Settings page; themes; companions; conversation rename, pin and groups; phone access by QR over Wi-Fi or tunnel; demo mode.
 
-## Next: 0.2 "Supervise"
+Release 0.1 addresses all five problems above for Claude Code. For Codex, number 4 (approvals) is still open.
 
-The release that makes it possible to stay in Shared Table for a whole working session.
+## Next: 0.2 "Stay in one place"
 
 | Feature | Why | Notes |
 |---|---|---|
-| **Approvals in the chat** | Today an agent that needs permission is denied automatically. The supervisor should see "Claude wants to run `npm install`" and answer Allow / Deny / Always, from desktop or phone. | Needs the CLIs' interactive permission channel instead of one-shot runs. Largest item. |
-| **Per-agent stop and retry** | Stop one agent without stopping the turn; re-ask one agent. | Small. |
-| **Changes panel** | After a build turn, show the git diff per agent, with revert. | Makes build mode safe to use daily. |
-| **One worktree per agent** | Each agent edits its own git worktree; you merge the winner. Removes the "two agents, one folder" risk. | Optional per conversation. |
-| **Terminal panel** | Run a command and see output without leaving the page; paste output to the agents in one click. | Command runner first; a full interactive terminal later. |
-| **Projects switcher** | Several project folders in one window, each with its own conversations and agents. | Today: one server per project. |
+| **Approvals for Codex** | Codex's non-interactive mode has no permission channel; today its sandbox decides. | Needs Codex's app-server protocol instead of `codex exec`. |
+| **Interactive terminal** | The Commands tab cannot answer prompts (`npm init`, `git rebase -i`). | Needs a pseudo-terminal, which Node does not ship; the first dependency this project would take. |
+| **Desktop app** | Menu-bar icon, auto-start, and a companion that walks on the real desktop, outside the browser window. | Thin wrapper around the same server. |
+| **Dev-server awareness** | Detect the project's running dev server and open it in Preview automatically; let agents see a screenshot of it. | |
+| **Sync a worktree with the project** | An agent's worktree starts from the commit it was created on and does not follow later commits. | Rebase or re-create on request. |
+| **Phone push notifications** | Browser notifications only reach a phone while the page is open. | Needs a push service. |
 
 ## 0.3 "Team"
 

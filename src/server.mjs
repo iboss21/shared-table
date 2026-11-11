@@ -9,6 +9,8 @@ import { createDemoRunner } from './demo.mjs';
 import { KINDS, MAX_ENTRY, parseBoard, visibleText } from './board.mjs';
 import { qrRows } from './qr.mjs';
 import { lanAddresses, startTunnel, tunnelProvider } from './remote.mjs';
+import { projectDataDir } from './config.mjs';
+import { isRepo, changedFiles, fileDiff, revertFile, ensureWorktree, applyWorktree, discardWorktree, removeWorktrees, runCommand } from './workspace.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, '..', 'public');
@@ -17,12 +19,12 @@ export const VERSION = JSON.parse(await fs.readFile(path.join(here, '..', 'packa
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const LIMITS = { attachmentsPerMessage: 10, attachmentBytes: 15 * 1024 * 1024, inlineTextBytes: 200 * 1024, messageCharacters: 8000, briefCharacters: 12000, turnsPerConversation: 200, historyTurns: 12, historyCharacters: 60000, replyInHistory: 6000, boardEntries: 200, perMinute: 10, perHour: 120, devices: 12 };
 const STATIC = {
-  '/': ['index.html', 'text/html; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/style.css': ['style.css', 'text/css; charset=utf-8'],
-  '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json'], '/icon.svg': ['icon.svg', 'image/svg+xml'],
+  '/': ['index.html', 'text/html; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/pet.js': ['pet.js', 'text/javascript; charset=utf-8'], '/style.css': ['style.css', 'text/css; charset=utf-8'],
+  '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json'], '/partners.json': ['partners.json', 'application/json; charset=utf-8'], '/icon.svg': ['icon.svg', 'image/svg+xml'],
   '/icon-192.png': ['icon-192.png', 'image/png'], '/icon-512.png': ['icon-512.png', 'image/png'], '/apple-touch-icon.png': ['icon-192.png', 'image/png'],
 };
 const BASE_HEADERS = { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Cross-Origin-Resource-Policy': 'same-origin' };
-const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; manifest-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; manifest-src 'self'; frame-src http://localhost:* http://127.0.0.1:* https:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
 
 const INLINE_IMAGES = { 'image/png': 1, 'image/jpeg': 1, 'image/gif': 1, 'image/webp': 1 };
 const TEXT_FILE = /\.(txt|md|markdown|json|jsonl|ya?ml|toml|ini|env\.example|csv|tsv|log|xml|html?|css|scss|js|mjs|cjs|jsx|ts|tsx|py|rb|go|rs|java|kt|swift|c|h|cc|cpp|hpp|cs|php|lua|sql|sh|zsh|bash|ps1|bat|diff|patch|vue|svelte|gradle|dockerfile|conf|cfg)$/i;
@@ -40,15 +42,14 @@ export async function createTable({ config, runner, authenticate, now = () => Da
   const agents = resolveAgents(config);
   if (!agents.length) throw new Error('No agents configured.');
   const run = runner || (config.demo ? createDemoRunner() : runAgent);
-  const runtime = config.dataDir;
-  const scratch = path.join(runtime, 'workspace');
-  await fs.mkdir(path.join(runtime, 'conversations'), { recursive: true });
+  let runtime = config.dataDir, attachRoot = path.join(runtime, 'attachments'), repo = false;
+  const scratch = path.join(config.dataRoot, 'workspace');
   await fs.mkdir(scratch, { recursive: true });
-  // Agents always start in the project folder, so their sessions show up under that project in their own apps.
-  const workDir = config.projectDir;
   const env = agentEnv(process.env, config);
+  const SETTINGS = { mode: ['advise', 'read', 'build'], sessions: ['native', 'stateless'], isolation: ['shared', 'worktree'], approvals: ['ask', 'deny'], terminal: [true, false], fullHarness: [true, false], phoneApprovals: [true, false] };
+  const approvals = new Map(); // id -> { turnId, agent, tool, detail, resolve }
+  const terminal = []; // newest last: { id, command, output, running, exitCode, startedAt, stop }
 
-  const attachRoot = path.join(runtime, 'attachments');
   const uploads = new Map(); // id -> attachment waiting to be sent with a message
   const ownerCookie = randomBytes(32).toString('hex');
   const clients = new Map(); // response -> role
@@ -56,9 +57,15 @@ export async function createTable({ config, runner, authenticate, now = () => Da
   const pairAttempts = [];
   const recent = [];
   let active = null, writes = Promise.resolve(), state, index, devices = [];
+  config.projectDirAtStart = config.projectDir;
 
   const newConversation = () => ({ id: randomUUID(), createdAt: new Date().toISOString(), brief: config.brief, board: [], turns: [], sessions: {} });
 
+  // Load (or create) the conversation store of the current project folder.
+  async function loadStore() {
+  await fs.mkdir(path.join(runtime, 'conversations'), { recursive: true });
+  repo = await isRepo(config.projectDir);
+  try { const saved = await readJSON(path.join(runtime, 'settings.json')); for (const [key, allowed] of Object.entries(SETTINGS)) if (allowed.includes(saved[key])) config[key] = saved[key]; } catch { /* defaults */ }
   try {
     index = await readJSON(path.join(runtime, 'index.json'));
     const current = await readJSON(path.join(runtime, 'current.json'));
@@ -70,18 +77,31 @@ export async function createTable({ config, runner, authenticate, now = () => Da
     state = newConversation();
     index = [{ id: state.id, createdAt: state.createdAt, title: 'New conversation' }];
   }
-  try { devices = await readJSON(path.join(runtime, 'devices.json')); } catch { devices = []; }
   for (const turn of state.turns) for (const reply of Object.values(turn.replies)) {
     if (['queued', 'running'].includes(reply.status)) Object.assign(reply, { status: 'error', error: 'Shared Table restarted before this request finished. It was not retried.' });
   }
+  }
+  await loadStore();
+  try { devices = await readJSON(path.join(config.dataRoot, 'devices.json')); } catch { try { devices = await readJSON(path.join(runtime, 'devices.json')); } catch { devices = []; } }
+
+  // Known projects, newest first, for the project switcher.
+  const projectsFile = path.join(config.dataRoot, 'projects.json');
+  let projects = [];
+  try { projects = (await readJSON(projectsFile)).filter(item => item && typeof item.folder === 'string'); } catch { /* first run */ }
+  const rememberProject = async () => {
+    projects = [{ folder: config.projectDir, name: config.name }, ...projects.filter(item => item.folder !== config.projectDir)].slice(0, 30);
+    await writeAtomic(projectsFile, projects).catch(() => {});
+  };
+  await rememberProject();
 
   const persist = () => {
-    const snapshot = structuredClone(state), rows = structuredClone(index), list = structuredClone(devices);
+    const snapshot = structuredClone(state), rows = structuredClone(index), list = structuredClone(devices), folder = runtime;
     writes = writes.catch(() => {}).then(async () => {
+      const runtime = folder;
       await writeAtomic(path.join(runtime, 'conversations', snapshot.id + '.json'), snapshot);
       await writeAtomic(path.join(runtime, 'current.json'), { id: snapshot.id });
       await writeAtomic(path.join(runtime, 'index.json'), rows);
-      await writeAtomic(path.join(runtime, 'devices.json'), list);
+      await writeAtomic(path.join(config.dataRoot, 'devices.json'), list);
     });
     return writes;
   };
@@ -104,11 +124,14 @@ export async function createTable({ config, runner, authenticate, now = () => Da
   const remote = { lan: [], tunnel: null, tunnelStatus: 'off', tunnelError: null, tunnelServer: null };
   const view = role => ({
     version: VERSION, role, demo: !!config.demo,
-    project: { name: config.name, mode: config.mode, sessions: config.sessions, folder: role === 'owner' ? config.projectDir : path.basename(config.projectDir) },
-    agents: agents.map(agent => ({ id: agent.id, label: agent.label, vendor: agent.vendor, color: agent.color, experimental: !!agent.experimental, ...statuses[agent.id],
-      ...(role === 'owner' && state.sessions?.[agent.id] && agent.resumeCommand ? { session: state.sessions[agent.id], resume: agent.resumeCommand(state.sessions[agent.id], config.projectDir) } : {}) })),
+    project: { name: config.name, mode: config.mode, sessions: config.sessions, folder: role === 'owner' ? config.projectDir : path.basename(config.projectDir), repo },
+    settings: Object.fromEntries(Object.keys(SETTINGS).map(key => [key, config[key]])),
+    approvals: [...approvals.entries()].map(([id, item]) => ({ id, turnId: item.turnId, agent: item.agent, tool: item.tool, detail: item.detail })),
+    canApprove: role === 'owner' || config.phoneApprovals,
+    agents: agents.map(agent => ({ id: agent.id, label: agent.label, vendor: agent.vendor, color: agent.color, experimental: !!agent.experimental, approvals: !!agent.approvals, ...statuses[agent.id], ...(limits[agent.id] ? { limit: limits[agent.id] } : {}),
+      ...(role === 'owner' && state.sessions?.[agent.id] && agent.resumeCommand ? { session: state.sessions[agent.id], resume: agent.resumeCommand(state.sessions[agent.id], workDirFor(agent.id)) } : {}) })),
     conversation: state, conversations: index, active: active?.turnId || null, limits: LIMITS,
-    ...(role === 'owner' ? { remote: {
+    ...(role === 'owner' ? { projects, terminal: config.terminal ? terminal.map(({ stop, ...entry }) => ({ ...entry, output: entry.output.slice(-20000) })) : null, remote: {
       lan: remote.lan.map(entry => entry.url), lanAvailable: lanAddresses().length > 0,
       tunnel: remote.tunnel?.url || config.publicUrl || null, tunnelStatus: config.publicUrl ? 'on' : remote.tunnelStatus, tunnelError: remote.tunnelError,
       tunnelProvider: config.publicUrl ? 'Your own address' : remote.tunnel?.provider || tunnelProvider()?.label || null,
@@ -119,8 +142,14 @@ export async function createTable({ config, runner, authenticate, now = () => Da
   const broadcast = event => { for (const res of clients.keys()) send(res, event); };
   const broadcastState = () => { for (const [res, role] of clients) send(res, { type: 'state', ...view(role) }); };
 
+  const limits = {}; // agent id -> latest usage-limit information reported by its CLI
+  // Where an agent works: the project folder, or its own git worktree in build mode with isolation on.
+  const isolated = () => config.mode === 'build' && config.isolation === 'worktree' && repo;
+  const worktreeRoot = () => path.join(runtime, 'worktrees', state.id);
+  const workDirFor = id => (isolated() && agents.find(agent => agent.id === id)?.kind !== 'http' ? path.join(worktreeRoot(), id) : config.projectDir);
+
   // Show paths relative to the project folder, not the full path on this computer.
-  const relative = activity => (activity || []).map(step => ({ tool: step.tool, detail: String(step.detail || '').split(config.projectDir + path.sep).join('').replace(/^.*[\\/]attachments[\\/][a-f0-9-]{36}[\\/][a-f0-9]{18}-/, 'attached: ') }));
+  const relative = activity => (activity || []).map(step => ({ tool: step.tool, detail: String(step.detail || '').replace(/^.*[\\/]worktrees[\\/][a-f0-9-]{36}[\\/][a-z0-9_-]+[\\/]/, '').split(config.projectDir + path.sep).join('').replace(/^.*[\\/]attachments[\\/][a-f0-9-]{36}[\\/][a-f0-9]{18}-/, 'attached: ') }));
 
   // ------------------------------------------------------------------ prompt
   const mentionPattern = /(^|[\s(])@([a-z][a-z0-9_-]{1,23})\b/gi;
@@ -176,19 +205,15 @@ export async function createTable({ config, runner, authenticate, now = () => Da
     while (recent.length && recent[0] < now() - 3600000) recent.shift();
     if (recent.length >= LIMITS.perHour || recent.filter(time => time > now() - 60000).length >= LIMITS.perMinute) return { status: 429, body: { error: 'Slow down: ' + LIMITS.perMinute + ' messages per minute, ' + LIMITS.perHour + ' per hour.' } };
 
-    let targets, requests = {};
+    let targets;
     if (kind === 'review') {
       const last = state.turns.at(-1);
       const done = last ? Object.entries(last.replies).filter(([, reply]) => reply.status === 'complete') : [];
       if (done.length < 2) return { status: 409, body: { error: 'Cross-review needs at least two finished answers in the last turn.' } };
       targets = done.map(([id]) => id);
-      for (const id of targets) requests[id] = { kind: 'review', instruction: 'Review the other answers to the last user message. Say what you agree with, what you would change and why, then give the plan you would now follow. Do not repeat your own earlier answer.', yourAnswer: last.replies[id].text.slice(0, LIMITS.replyInHistory), otherAnswers: Object.fromEntries(done.filter(([other]) => other !== id).map(([other, reply]) => [other, reply.text.slice(0, LIMITS.replyInHistory)])) };
       message = message || 'Review each other\'s answers and converge on one plan.';
-    } else {
-      targets = targetsFor(message, explicitTargets);
-      for (const id of targets) requests[id] = { kind: 'message', userMessage: message };
-    }
-    // Attachments: text files travel inside the prompt; images and other files are handed over by path.
+    } else targets = targetsFor(message, explicitTargets);
+
     const attachments = [];
     for (const id of attachmentIds.slice(0, LIMITS.attachmentsPerMessage)) {
       const item = uploads.get(id);
@@ -196,50 +221,90 @@ export async function createTable({ config, runner, authenticate, now = () => Da
       uploads.delete(id);
       attachments.push(item);
     }
+
+    recent.push(now());
+    if (targets.length < 2 || kind === 'review') order = 'parallel';
+    const turn = { id: randomUUID(), clientId, createdAt: new Date().toISOString(), kind, message, from, targets, order, ...(attachments.length ? { attachments: attachments.map(({ id, name, type, size, image }) => ({ id, name, type, size, image })) } : {}), replies: Object.fromEntries(targets.map(id => [id, { status: 'queued', text: '', activity: [] }])) };
+    state.turns.push(turn);
+    const entry = index.find(row => row.id === state.id);
+    if (state.turns.length === 1 && entry && !entry.renamed) entry.title = message.replace(/\s+/g, ' ').slice(0, 70);
+    active = { turnId: turn.id, controllers: new Map(), stopped: false };
+    try { await persist(); } catch { active = null; state.turns.pop(); return { status: 503, body: { error: 'The conversation could not be saved. No request was started.' } }; }
+    broadcastState();
+    void runTurn(turn, targets);
+    return { status: 202, body: { turnId: turn.id, targets } };
+  }
+
+  /** What each addressed agent is asked in this turn. Rebuilt from the saved turn, so a retry asks exactly the same thing. */
+  async function buildRequests(turn, before) {
+    const requests = {};
+    if (turn.kind === 'review') {
+      const last = before.at(-1), done = last ? Object.entries(last.replies).filter(([, reply]) => reply.status === 'complete') : [];
+      for (const id of turn.targets) requests[id] = { kind: 'review', instruction: 'Review the other answers to the last user message. Say what you agree with, what you would change and why, then give the plan you would now follow. Do not repeat your own earlier answer.', yourAnswer: (last?.replies[id]?.text || '').slice(0, LIMITS.replyInHistory), otherAnswers: Object.fromEntries(done.filter(([other]) => other !== id).map(([other, reply]) => [other, reply.text.slice(0, LIMITS.replyInHistory)])) };
+    } else for (const id of turn.targets) requests[id] = { kind: 'message', userMessage: turn.message };
+    // Attachments: text files travel inside the prompt; images and other files are handed over by path.
+    const attachments = (turn.attachments || []).map(item => ({ ...item, path: path.join(attachRoot, state.id, item.id + '-' + item.name) }));
     if (attachments.length) {
       const listed = [];
       for (const item of attachments) {
         const entry = { name: item.name, type: item.type, bytes: item.size, path: item.path };
         if (!item.image && item.size <= LIMITS.inlineTextBytes && (item.type.startsWith('text/') || /json|xml|javascript|yaml|toml/.test(item.type) || TEXT_FILE.test(item.name))) {
-          const text = (await fs.readFile(item.path)).toString('utf8');
+          const text = await fs.readFile(item.path).then(body => body.toString('utf8'), () => '\u0000');
           if (!text.includes('\u0000')) { entry.text = text; item.inline = true; }
         }
         listed.push(entry);
       }
-      for (const id of targets) Object.assign(requests[id], { attachments: listed, attachmentNote: 'The user attached these files to this message. Files with a "text" field are included in full. For the others (images, PDFs and so on) open the file at "path" with your file-reading tool, or use the image if it was passed to you directly.' });
+      for (const id of turn.targets) Object.assign(requests[id], { attachments: listed, attachmentNote: 'The user attached these files to this message. Files with a "text" field are included in full. For the others (images, PDFs and so on) open the file at "path" with your file-reading tool, or use the image if it was passed to you directly.' });
+    }
+    return { requests, attachments };
+  }
+
+  /** Run the given agents of a turn: all at once, or one after another. Used for new turns and for retries. */
+  async function runTurn(turn, ids) {
+    const conversationId = state.id;
+    const before = state.turns.slice(0, state.turns.indexOf(turn));
+    state.sessions ||= {};
+    let prepared;
+    try { prepared = await buildRequests(turn, before); }
+    catch (error) { for (const id of ids) turn.replies[id] = { status: 'error', text: '', error: 'Could not prepare the request: ' + String(error.message).slice(0, 200), activity: [] }; active = null; broadcastState(); return; }
+    const { requests, attachments } = prepared;
+    if (isolated()) {
+      const paths = {};
+      for (const id of turn.targets) if (agents.find(agent => agent.id === id).kind !== 'http') paths[id] = await ensureWorktree(config.projectDir, workDirFor(id), 'shared-table/' + state.id.slice(0, 8) + '/' + id).catch(() => null);
+      for (const id of turn.targets) requests[id].workspace = { note: 'Each agent edits its own git worktree of the project. The supervisor applies finished work to the project folder. You can read another agent\'s worktree to check its work, but do not edit it.', yours: paths[id] || config.projectDir, others: Object.fromEntries(Object.entries(paths).filter(([other, value]) => other !== id && value)) };
     }
 
-    recent.push(now());
-    if (targets.length < 2 || kind === 'review') order = 'parallel';
-    const before = state.turns.slice();
-    const turn = { id: randomUUID(), clientId, createdAt: new Date().toISOString(), kind, message, from, targets, order, ...(attachments.length ? { attachments: attachments.map(({ id, name, type, size, image }) => ({ id, name, type, size, image })) } : {}), replies: Object.fromEntries(targets.map(id => [id, { status: 'queued', text: '', activity: [] }])) };
-    state.turns.push(turn);
-    const entry = index.find(row => row.id === state.id);
-    if (state.turns.length === 1 && entry && !entry.renamed) entry.title = message.replace(/\s+/g, ' ').slice(0, 70);
-    const controller = new AbortController();
-    active = { turnId: turn.id, controller };
-    try { await persist(); } catch { active = null; state.turns.pop(); return { status: 503, body: { error: 'The conversation could not be saved. No request was started.' } }; }
-    broadcastState();
-
-    const conversationId = state.id;
-    state.sessions ||= {};
     const runOne = async id => {
       const agent = agents.find(item => item.id === id);
-      if (controller.signal.aborted) { turn.replies[id] = { status: 'cancelled', text: '', activity: [] }; return; }
-      Object.assign(turn.replies[id], { status: 'running' });
+      const controller = new AbortController();
+      active.controllers.set(id, controller);
+      if (active.stopped) { turn.replies[id] = { status: 'cancelled', text: '', activity: [] }; return; }
+      turn.replies[id] = { status: 'running', text: '', activity: [] };
       broadcast({ type: 'reply', turnId: turn.id, agent: id, reply: turn.replies[id] });
       // One after another: later agents receive what earlier agents wrote in this same turn.
-      const earlier = Object.fromEntries(targets.slice(0, targets.indexOf(id)).filter(other => turn.replies[other].status === 'complete').map(other => [other, turn.replies[other].text.slice(0, LIMITS.replyInHistory)]));
-      const request = order === 'sequence' && Object.keys(earlier).length ? { ...requests[id], earlierInThisTurn: earlier, note: 'The agents listed in earlierInThisTurn already finished their part of this message. Do your part now, taking their work into account.' } : requests[id];
+      const earlier = Object.fromEntries(turn.targets.slice(0, turn.targets.indexOf(id)).filter(other => turn.replies[other].status === 'complete').map(other => [other, turn.replies[other].text.slice(0, LIMITS.replyInHistory)]));
+      const request = turn.order === 'sequence' && Object.keys(earlier).length ? { ...requests[id], earlierInThisTurn: earlier, note: 'The agents listed in earlierInThisTurn already finished their part of this message. Do your part now, taking their work into account.' } : requests[id];
       const session = config.sessions === 'native' && agent.kind !== 'http' ? { id: state.sessions[id] || randomUUID(), resume: !!state.sessions[id] } : null;
-      let last = 0;
+      let last = 0, allowAll = false;
       const result = await run(agent, promptFor(agent, request, before), {
-        mode: config.mode, config, policy: policyFor(agent, agents, agent.kind === 'http' ? 'advise' : config.mode), cwd: workDir, signal: controller.signal, env, session, attachments, attachmentDir: attachments.length ? path.dirname(attachments[0].path) : null,
+        mode: config.mode, config, policy: policyFor(agent, agents, agent.kind === 'http' ? 'advise' : config.mode), cwd: workDirFor(id), signal: controller.signal, env, session, attachments, attachmentDir: attachments.length ? path.dirname(attachments[0].path) : null,
         onUpdate: change => {
           Object.assign(turn.replies[id], { text: visibleText(change.text), model: change.model, activity: relative(change.activity) });
           if (now() - last >= 90) { last = now(); broadcast({ type: 'reply', turnId: turn.id, agent: id, reply: turn.replies[id] }); }
         },
+        // The agent's harness asks before a command or other sensitive action: show it in the chat and wait for the supervisor.
+        onApproval: request => {
+          if (allowAll) return { allow: true };
+          if (controller.signal.aborted) return { allow: false, message: 'The supervisor stopped this run.' };
+          return new Promise(resolve => {
+            const approvalId = randomUUID();
+            const detail = String(request.input.command || request.input.file_path || request.input.url || request.input.path || request.description || JSON.stringify(request.input)).slice(0, 600);
+            approvals.set(approvalId, { turnId: turn.id, agent: id, tool: request.tool, detail: relative([{ tool: '', detail }])[0].detail, resolve: decision => { approvals.delete(approvalId); if (decision === 'allow_turn') allowAll = true; broadcastState(); resolve(decision === 'deny' ? { allow: false, message: 'The supervisor denied this.' } : { allow: true }); } });
+            broadcastState();
+          });
+        },
       }).catch(error => ({ status: 'error', text: '', error: 'The agent process failed: ' + String(error.message).slice(0, 200), activity: [] }));
+      for (const item of approvals.values()) if (item.turnId === turn.id && item.agent === id) item.resolve('deny');
 
       const parsed = parseBoard(result.text || '');
       const added = [];
@@ -254,18 +319,33 @@ export async function createTable({ config, runner, authenticate, now = () => Da
         if (result.status === 'complete') state.sessions[id] = agent.id === 'claude' ? session.id : result.sessionId || session.id;
         else if (result.status === 'error' && session.resume) { delete state.sessions[id]; result.error = (result.error || '') + ' (Its saved session was dropped; the next message starts a fresh one.)'; }
       }
-      turn.replies[id] = { status: result.status, text: parsed.text, ...(result.error ? { error: result.error } : {}), model: result.model || null, activity: relative(result.activity), durationMs: result.durationMs || 0, boardAdded: added.length, ...(session ? { session: session.resume ? 'resumed' : 'new' } : {}) };
+      if (result.limit) limits[id] = result.limit;
+      if (result.status === 'error' && /usage limit|rate limit|quota/i.test(result.error || '')) limits[id] = { ...(limits[id] || {}), status: 'reached', message: result.error.slice(0, 200) };
+      turn.replies[id] = { status: result.status, text: parsed.text, ...(result.error ? { error: result.error } : {}), model: result.model || null, activity: relative(result.activity), durationMs: result.durationMs || 0, boardAdded: added.length, ...(result.usage ? { usage: result.usage } : {}), ...(session ? { session: session.resume ? 'resumed' : 'new' } : {}) };
       if (result.status === 'error' && /sign|log ?in|auth/i.test(result.error || '')) statuses[id] = { ready: false, error: result.error };
       await persist().catch(() => broadcast({ type: 'notice', error: 'The latest answers could not be saved. Download a copy now.' }));
       broadcastState();
     };
-    const work = order === 'sequence' ? (async () => { for (const id of targets) await runOne(id); })() : Promise.all(targets.map(runOne));
-    void work.catch(() => {}).finally(async () => {
-      active = null;
-      await persist().catch(() => {});
-      broadcastState();
-    });
-    return { status: 202, body: { turnId: turn.id, targets } };
+    const work = turn.order === 'sequence' ? (async () => { for (const id of ids) await runOne(id); })() : Promise.all(ids.map(runOne));
+    await work.catch(() => {});
+    active = null;
+    await persist().catch(() => {});
+    broadcast({ type: 'done', turnId: turn.id });
+    broadcastState();
+  }
+
+  /** Switch to another project folder: its own conversations, same agents and paired phones. */
+  async function openProject(folder) {
+    const full = path.resolve(folder.replace(/^~(?=$|[\\/])/, process.env.HOME || process.env.USERPROFILE || '~'));
+    const stat = await fs.stat(full).catch(() => null);
+    if (!stat?.isDirectory()) throw new Error('That folder does not exist.');
+    await persist();
+    config.projectDir = full; config.name = path.basename(full) || 'Project';
+    runtime = config.dataDirExplicit && full === config.projectDirAtStart ? config.dataDir : projectDataDir(config.dataRoot, full);
+    attachRoot = path.join(runtime, 'attachments');
+    uploads.clear();
+    await loadStore();
+    await persist(); await rememberProject();
   }
 
   async function setLan(enabled) {
@@ -312,6 +392,13 @@ export async function createTable({ config, runner, authenticate, now = () => Da
       const pathname = url.pathname;
       const secure = kind === 'tunnel';
 
+      if (req.method === 'GET' && /^\/(pets|partners)\/[a-z0-9-]+\.(webp|png|jpg)$/.test(pathname)) {
+        try {
+          const body = await fs.readFile(path.join(publicDir, pathname.split('/')[1], path.basename(pathname)));
+          res.writeHead(200, { ...BASE_HEADERS, 'Content-Type': pathname.endsWith('.png') ? 'image/png' : pathname.endsWith('.jpg') ? 'image/jpeg' : 'image/webp', 'Cache-Control': 'private, max-age=86400' });
+          return res.end(body);
+        } catch { return json(res, 404, { error: 'Not found.' }); }
+      }
       if (req.method === 'GET' && STATIC[pathname]) {
         const [file, type] = STATIC[pathname];
         const headers = { ...BASE_HEADERS, 'Content-Type': type, 'Content-Security-Policy': CSP };
@@ -397,7 +484,88 @@ export async function createTable({ config, runner, authenticate, now = () => Da
       const value = await readBody(req);
       if (!value || typeof value !== 'object' || Array.isArray(value)) return json(res, 400, { error: 'Invalid request.' });
 
-      if (pathname === '/api/cancel') { active?.controller.abort(); return json(res, 202, { cancelRequested: !!active }); }
+      if (pathname === '/api/cancel') {
+        if (active && typeof value.agent === 'string') active.controllers.get(value.agent)?.abort();
+        else if (active) { active.stopped = true; for (const controller of active.controllers.values()) controller.abort(); }
+        for (const item of approvals.values()) if (!value.agent || item.agent === value.agent) item.resolve('deny');
+        return json(res, 202, { cancelRequested: !!active });
+      }
+      if (pathname === '/api/approve') {
+        if (role !== 'owner' && !config.phoneApprovals) return json(res, 403, { error: 'Approvals from phones are switched off in Settings.' });
+        const item = approvals.get(value.id);
+        if (!item || !['allow', 'allow_turn', 'deny'].includes(value.decision)) return json(res, 404, { error: 'That request was already answered.' });
+        item.resolve(value.decision);
+        return json(res, 200, { ok: true });
+      }
+
+      // Changes made in the project (or in each agent's worktree).
+      if (pathname === '/api/changes' || pathname === '/api/diff' || pathname === '/api/revert' || pathname === '/api/worktree') {
+        if (!repo) return json(res, 200, { repo: false, targets: [] });
+        const places = isolated() ? [...agents.filter(agent => agent.kind !== 'http').map(agent => ({ id: agent.id, label: agent.label, dir: workDirFor(agent.id) })), { id: 'project', label: 'Project folder', dir: config.projectDir }] : [{ id: 'project', label: 'Project folder', dir: config.projectDir }];
+        if (pathname === '/api/changes') {
+          const targets = [];
+          for (const place of places) { const files = await changedFiles(place.dir).catch(() => null); if (files) targets.push({ id: place.id, label: place.label, files }); }
+          return json(res, 200, { repo: true, isolated: isolated(), targets });
+        }
+        const place = places.find(item => item.id === value.target);
+        if (!place) return json(res, 400, { error: 'Unknown place.' });
+        try {
+          if (pathname === '/api/diff') return json(res, 200, { text: await fileDiff(place.dir, String(value.file || '')) });
+          if (role !== 'owner') return json(res, 403, { error: 'Only the host computer can change files.' });
+          if (active) return json(res, 409, { error: 'Wait for the agents to finish first.' });
+          if (pathname === '/api/revert') { await revertFile(place.dir, String(value.file || '')); return json(res, 200, { ok: true }); }
+          if (place.id === 'project') return json(res, 400, { error: 'Choose an agent worktree.' });
+          if (value.op === 'apply') return json(res, 200, { applied: await applyWorktree(config.projectDir, place.dir) });
+          if (value.op === 'discard') { await discardWorktree(place.dir); return json(res, 200, { ok: true }); }
+          return json(res, 400, { error: 'Unknown operation.' });
+        } catch (error) { return json(res, 400, { error: String(error.message).slice(0, 400) }); }
+      }
+
+      // Command panel, settings and projects: host computer only.
+      if (pathname.startsWith('/api/terminal') || pathname === '/api/settings' || pathname === '/api/project') {
+        if (role !== 'owner') return json(res, 403, { error: 'Only the host computer can do this.' });
+        if (pathname === '/api/terminal/run') {
+          const command = String(value.command || '').trim();
+          if (!config.terminal) return json(res, 403, { error: 'The command panel is switched off in Settings.' });
+          if (!command || command.length > 4000) return json(res, 400, { error: 'Type a command.' });
+          if (terminal.filter(entry => entry.running).length >= 3) return json(res, 429, { error: 'Three commands are already running.' });
+          const entry = { id: randomBytes(6).toString('hex'), command, output: '', running: true, exitCode: null, startedAt: new Date().toISOString() };
+          let last = 0;
+          const push = () => { for (const [client, clientRole] of clients) if (clientRole === 'owner') send(client, { type: 'terminal', entry: { id: entry.id, command, running: entry.running, exitCode: entry.exitCode, startedAt: entry.startedAt, output: entry.output.slice(-20000) } }); };
+          entry.stop = runCommand(command, { cwd: config.projectDir,
+            onOutput: chunk => { entry.output = (entry.output + chunk).slice(-200000); if (now() - last > 120) { last = now(); push(); } },
+            onExit: code => { entry.running = false; entry.exitCode = code; push(); } });
+          terminal.push(entry); while (terminal.length > 30) terminal.shift();
+          push();
+          return json(res, 202, { id: entry.id });
+        }
+        if (pathname === '/api/terminal/stop') { terminal.find(entry => entry.id === value.id)?.stop?.(); return json(res, 202, { ok: true }); }
+        if (pathname === '/api/terminal/clear') { for (let i = terminal.length - 1; i >= 0; i--) if (!terminal[i].running) terminal.splice(i, 1); broadcastState(); return json(res, 200, { ok: true }); }
+        if (active) return json(res, 409, { error: 'Wait for the agents to finish first.' });
+        if (pathname === '/api/settings') {
+          for (const [key, allowed] of Object.entries(SETTINGS)) if (value[key] !== undefined) { if (!allowed.includes(value[key])) return json(res, 400, { error: 'Invalid value for ' + key + '.' }); config[key] = value[key]; }
+          if (!value.timeoutSeconds) config.timeoutSeconds = config.mode === 'build' ? 900 : config.mode === 'read' ? 420 : 180;
+          await writeAtomic(path.join(runtime, 'settings.json'), Object.fromEntries(Object.keys(SETTINGS).map(key => [key, config[key]])));
+          broadcastState();
+          return json(res, 200, { ok: true });
+        }
+        if (pathname === '/api/project') {
+          try { await openProject(String(value.folder || '')); } catch (error) { return json(res, 400, { error: String(error.message).slice(0, 200) }); }
+          broadcastState();
+          return json(res, 200, { ok: true });
+        }
+        return json(res, 404, { error: 'Not found.' });
+      }
+      if (pathname === '/api/retry') {
+        const turn = state.turns.at(-1);
+        if (active) return json(res, 409, { error: 'Wait for the agents to finish, or stop them first.' });
+        if (!turn || !turn.targets.includes(value.agent)) return json(res, 400, { error: 'Nothing to retry.' });
+        turn.replies[value.agent] = { status: 'queued', text: '', activity: [] };
+        active = { turnId: turn.id, controllers: new Map(), stopped: false };
+        broadcastState();
+        void runTurn(turn, [value.agent]);
+        return json(res, 202, { ok: true });
+      }
 
       if (pathname === '/api/board') {
         if (value.op === 'add') {
@@ -475,6 +643,7 @@ export async function createTable({ config, runner, authenticate, now = () => Da
         index = index.filter(row => row.id !== value.id);
         await fs.rm(path.join(runtime, 'conversations', value.id + '.json'), { force: true });
         await fs.rm(path.join(attachRoot, value.id), { recursive: true, force: true });
+        if (repo) await removeWorktrees(config.projectDir, path.join(runtime, 'worktrees', value.id));
         if (state.id === value.id) {
           if (index.length) state = await readJSON(path.join(runtime, 'conversations', index.at(-1).id + '.json'));
           else { state = newConversation(); index.push({ id: state.id, createdAt: state.createdAt, title: 'New conversation' }); }
@@ -517,7 +686,9 @@ export async function createTable({ config, runner, authenticate, now = () => Da
     tunnelUrl: () => remote.tunnel?.url || config.publicUrl || null,
     state: () => view('owner'),
     close: async () => {
-      active?.controller.abort();
+      if (active) for (const controller of active.controllers.values()) controller.abort();
+      for (const item of approvals.values()) item.resolve('deny');
+      for (const entry of terminal) entry.stop?.();
       remote.tunnel?.stop();
       for (const res of clients.keys()) res.end();
       await writes.catch(() => {});

@@ -61,12 +61,13 @@ async function runHttp(agent, prompt, { config, policy, signal, onUpdate, attach
  * Run one agent once. Resolves with { status: 'complete' | 'error' | 'cancelled', text, error?, model, activity, durationMs }.
  * No shell is involved: the prompt travels on stdin or as a single argument.
  */
-export async function runAgent(agent, prompt, { mode, config, policy, cwd, signal, session = null, attachments = [], attachmentDir = null, onUpdate = () => {}, spawnImpl = spawn, env = agentEnv(process.env, config) } = {}) {
+export async function runAgent(agent, prompt, { mode, config, policy, cwd, signal, session = null, attachments = [], attachmentDir = null, onApproval = null, onUpdate = () => {}, spawnImpl = spawn, env = agentEnv(process.env, config) } = {}) {
   if (agent.kind === 'http') return runHttp(agent, prompt, { config, policy, signal, onUpdate, attachments });
   if (!agent.path) return { status: 'error', text: '', error: agent.install, activity: [] };
   if (signal?.aborted) return { status: 'cancelled', text: '', activity: [] };
   const timeoutMs = (config.timeoutSeconds || 180) * 1000;
-  const { args, stdin, stdinText } = agent.args({ mode, config, policy, prompt, session, attachments, attachmentDir });
+  const { args, stdin, stdinText, protocol } = agent.args({ mode, config, policy, prompt, session, attachments, attachmentDir });
+  const streaming = protocol === 'claude-stream';
 
   return await new Promise(resolve => {
     const state = { text: '', sessionId: null, model: null, changed: false, activity: [], error: null, allowRead: attachments.some(item => !item.inline) };
@@ -81,18 +82,33 @@ export async function runAgent(agent, prompt, { mode, config, policy, cwd, signa
       settled = true; clearTimeout(timer); signal?.removeEventListener('abort', abort);
       const text = state.text.trim();
       const status = aborted ? 'cancelled' : timedOut ? 'error' : code === 0 && !state.error && text ? 'complete' : 'error';
-      const result = { status, text, sessionId: state.sessionId, model: state.model, activity: state.activity.slice(-40), durationMs: Date.now() - start };
+      const result = { status, text, sessionId: state.sessionId, model: state.model, activity: state.activity.slice(-40), durationMs: Date.now() - start, ...(state.usage ? { usage: state.usage } : {}), ...(state.limit ? { limit: state.limit } : {}) };
       if (status === 'error') result.error = timedOut ? 'The agent reached the ' + Math.round(timeoutMs / 1000) + '-second limit.' : state.error || safeError(stderr) || 'The agent exited without an answer.';
       resolve(result);
     };
     const abort = () => { aborted = true; stopOwned(child); };
     signal?.addEventListener('abort', abort, { once: true });
-    const timer = setTimeout(() => { timedOut = true; stopOwned(child); }, timeoutMs);
+    let timer = setTimeout(() => { timedOut = true; stopOwned(child); }, timeoutMs);
     const push = () => { if (state.changed) { state.changed = false; onUpdate({ text: state.text, model: state.model, activity: state.activity.slice(-40) }); } };
     const guard = () => { if (state.text.length > MAX_REPLY) { state.error = 'The reply exceeded the ' + MAX_REPLY + '-character limit.'; stopOwned(child); } };
+    // Permission requests from the agent's own harness: ask the supervisor, then answer on stdin. The clock stops while waiting.
+    const approve = async event => {
+      clearTimeout(timer);
+      const request = event.request || {};
+      let decision = { allow: false, message: 'No supervisor is connected to answer.' };
+      try { if (onApproval) decision = await onApproval({ tool: request.display_name || request.tool_name, input: request.input || {}, description: request.description || '' }); } catch { /* deny */ }
+      timer = setTimeout(() => { timedOut = true; stopOwned(child); }, timeoutMs);
+      const response = decision.allow ? { behavior: 'allow', updatedInput: request.input || {} } : { behavior: 'deny', message: decision.message || 'The supervisor denied this.' };
+      if (child.stdin.writable) child.stdin.write(JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: event.request_id, response } }) + '\n');
+    };
     const handleLine = raw => {
       if (!raw.trim()) return;
-      try { agent.parse(JSON.parse(raw), state, mode); guard(); push(); }
+      try {
+        const event = JSON.parse(raw);
+        if (streaming && event.type === 'control_request') { if (event.request?.subtype === 'can_use_tool') void approve(event); return; }
+        agent.parse(event, state, mode); guard(); push();
+        if (streaming && event.type === 'result') child.stdin.end();
+      }
       catch (error) { if (error instanceof SyntaxError) return; state.error = safeError(error.message); stopOwned(child); }
     };
 
@@ -109,6 +125,7 @@ export async function runAgent(agent, prompt, { mode, config, policy, cwd, signa
     child.on('error', error => { state.error = safeError(error.code === 'ENOENT' ? agent.install : error.message); finish(1); });
     child.on('close', code => { if (line && agent.format !== 'text') handleLine(line); finish(code); });
     child.stdin.on('error', () => {});
-    child.stdin.end(stdin ? (stdinText ?? prompt) : '');
+    if (streaming) child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: prompt } }) + '\n');
+    else child.stdin.end(stdin ? (stdinText ?? prompt) : '');
   });
 }

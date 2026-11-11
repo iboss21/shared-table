@@ -29,6 +29,7 @@ const initials = label => label.slice(0, 2);
 const agentOf = id => state?.agents.find(agent => agent.id === id);
 const tint = (node, id) => { const agent = agentOf(id); node.style.setProperty('--agent', agent ? agent.color : id === 'you' ? 'var(--ink)' : 'var(--muted)'); return node; };
 const seconds = ms => (ms >= 60000 ? Math.floor(ms / 60000) + 'm ' + Math.round((ms % 60000) / 1000) + 's' : (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + 's');
+const compact = n => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1000 ? Math.round(n / 1000) + 'k' : String(n));
 const clock = iso => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const day = iso => { const date = new Date(iso), today = new Date(); return date.toDateString() === today.toDateString() ? clock(iso) : date.toLocaleDateString([], { month: 'short', day: 'numeric' }); };
 
@@ -108,7 +109,19 @@ function replyCard(turn, id) {
   const status = el('span', 'status is-' + reply.status);
   if (reply.status === 'running' || reply.status === 'queued') status.append(el('span', 'pulse'), reply.activity?.length && !reply.text ? 'working' : reply.text ? 'writing' : 'thinking');
   else status.textContent = reply.status === 'complete' ? seconds(reply.durationMs || 0) : reply.status === 'cancelled' ? 'stopped' : 'failed';
-  head.append(status); card.append(head);
+  head.append(status);
+  const live = reply.status === 'running' || reply.status === 'queued', lastTurn = state.conversation.turns.at(-1) === turn;
+  if (live && turn.targets.length > 1) { const tools = el('span', 'reply-tools'), stop = el('button', '', 'Stop'); stop.type = 'button'; stop.title = 'Stop only ' + agent.label; stop.addEventListener('click', () => post('/api/cancel', { agent: id }).catch(fail)); tools.append(stop); head.append(tools); }
+  if (!live && lastTurn && !state.active) { const tools = el('span', 'reply-tools'), again = el('button', '', reply.status === 'complete' ? 'Ask again' : 'Retry'); again.type = 'button'; again.title = 'Ask ' + agent.label + ' this again'; again.addEventListener('click', () => post('/api/retry', { agent: id }).catch(fail)); tools.append(again); head.append(tools); }
+  card.append(head);
+  for (const request of (state.approvals || []).filter(item => item.turnId === turn.id && item.agent === id)) {
+    const box = el('div', 'approval'), line = el('p'), buttons = el('div');
+    line.append(el('b', '', agent.label + ' asks permission'), ' to use ' + request.tool + ':');
+    box.append(line, el('code', '', request.detail));
+    if (state.canApprove) for (const [decision, label, cls] of [['allow', 'Allow', 'primary'], ['allow_turn', 'Allow all this turn', ''], ['deny', 'Deny', 'danger']]) { const button = el('button', 'button ' + cls, label); button.type = 'button'; button.addEventListener('click', () => post('/api/approve', { id: request.id, decision }).catch(fail)); buttons.append(button); }
+    else buttons.append(el('small', '', 'Waiting for an answer on the host computer.'));
+    box.append(buttons); card.append(box);
+  }
   if (reply.activity?.length) {
     const box = el('div', 'activity');
     for (const step of reply.activity.slice(-4)) { const row = el('div'); row.append(el('i', '', step.tool), step.detail || ''); box.append(row); }
@@ -117,7 +130,14 @@ function replyCard(turn, id) {
   if (reply.text) { const body = el('div', 'reply-body'); body.append(markdown(reply.text)); card.append(body); }
   else if (reply.status === 'running' || reply.status === 'queued') card.append(el('div', 'reply-body waiting', reply.status === 'queued' && turn.order === 'sequence' ? agent.label + ' goes next, after the agent before it finishes.' : agent.label + ' is working in its own session…'));
   if (reply.error) card.append(el('p', 'reply-error', reply.error));
-  if (reply.boardAdded || reply.session) { const foot = el('div', 'reply-foot'); if (reply.boardAdded) foot.append(el('b', '', '+' + reply.boardAdded), 'added to the table'); if (reply.session) foot.append(el('span', 'session', (reply.boardAdded ? '· ' : '') + (reply.session === 'resumed' ? 'continued its own session' : 'started its own session'))); card.append(foot); }
+  if (reply.boardAdded || reply.session || reply.usage) {
+    const foot = el('div', 'reply-foot'), parts = [];
+    if (reply.boardAdded) foot.append(el('b', '', '+' + reply.boardAdded), 'added to the table');
+    if (reply.session) parts.push(reply.session === 'resumed' ? 'continued its own session' : 'started its own session');
+    if (reply.usage) parts.push(compact(reply.usage.input + reply.usage.output) + ' tokens' + (reply.usage.costUsd ? ' · $' + reply.usage.costUsd.toFixed(2) : ''));
+    if (parts.length) foot.append(el('span', 'session', (reply.boardAdded ? '· ' : '') + parts.join(' · ')));
+    card.append(foot);
+  }
   return card;
 }
 function turnCard(turn) {
@@ -204,6 +224,10 @@ function renderRail() {
     text.append(el('b', '', agent.label + (agent.experimental ? ' (experimental)' : '')), el('small', '', working ? (live === 'queued' ? 'Waiting for its turn' : 'Working now…') : agent.ready ? agent.vendor + ' · ' + agent.route : agent.error));
     row.append(el('span', 'avatar', initials(agent.label)), text, el('span', working ? 'pulse' : 'dot ' + (agent.checking ? '' : agent.ready ? 'ready' : 'off')));
     if (agent.session) { const open = el('button', 'session-copy', 'session ' + agent.session.slice(0, 8) + ' · copy resume command'); open.type = 'button'; open.title = agent.resume; open.addEventListener('click', event => { event.stopPropagation(); (navigator.clipboard?.writeText(agent.resume) || Promise.reject()).then(() => { open.textContent = 'copied: paste in a terminal'; }, () => { prompt('Run this in a terminal to open the same session:', agent.resume); }); }); text.append(open); }
+    const spent = state.conversation.turns.reduce((sum, turn) => sum + ((turn.replies[agent.id]?.usage?.input || 0) + (turn.replies[agent.id]?.usage?.output || 0)), 0);
+    if (agent.limit?.status === 'reached') { text.append(el('small', '', 'Usage limit reached')); const bar = el('div', 'meter full'); bar.append(el('i')); bar.firstChild.style.width = '100%'; text.append(bar); row.classList.add('off'); }
+    else if (typeof agent.limit?.used === 'number') { const used = Math.round(agent.limit.used * 100); text.append(el('small', '', used + '% of ' + (agent.limit.window || 'usage') + ' limit' + (spent ? ' · ' + compact(spent) + ' tokens here' : ''))); const bar = el('div', 'meter' + (used >= 90 ? ' full' : used >= 70 ? ' warn' : '')); bar.append(el('i')); bar.firstChild.style.width = Math.min(100, used) + '%'; text.append(bar); }
+    else if (spent) text.append(el('small', '', compact(spent) + ' tokens in this conversation'));
     row.title = 'Click to address ' + agent.label; row.addEventListener('click', () => { const box = $('message'); if (!new RegExp('@' + agent.id + '\\b', 'i').test(box.value)) box.value = '@' + agent.id + ' ' + box.value; setView('chat'); box.focus(); });
     return row;
   }));
@@ -242,7 +266,7 @@ function openMenu(item, row, anchor) {
 // ---------------------------------------------------------------- board
 function renderBoard() {
   const board = state.conversation.board || [];
-  $('board-count').textContent = String(board.length);
+  $('board-count').textContent = board.length ? String(board.length) : '';
   $('tab-count').textContent = board.length ? String(board.length) : '';
   const kinds = ['all', ...Object.keys(KIND_LABEL).filter(kind => board.some(item => item.kind === kind))];
   if (!kinds.includes(filter)) filter = 'all';
@@ -351,6 +375,7 @@ function pickMention(id) {
 }
 async function sendMessage(kind = 'message') {
   const box = $('message'), message = box.value.trim();
+  if (kind === 'message' && /^\/gamarjoba$/i.test(message)) { box.value = ''; resize(); return hello(); }
   if (state.active || pending.some(item => item.busy) || (kind === 'message' && !message && !pending.length)) return;
   fail(''); requestId ??= uuid();
   try {
@@ -421,7 +446,12 @@ function render(next) {
   $('chips').replaceChildren(...(state.demo ? [el('span', 'chip demo', 'Demo')] : []), mode);
   if (document.activeElement !== $('brief') || previous?.conversation.id !== state.conversation.id) $('brief').value = state.conversation.brief;
   $('folder').textContent = state.project.folder;
-  renderRail(); renderTranscript(); renderBoard(); renderComposer(); renderPhone();
+  renderRail(); renderTranscript(); renderBoard(); renderComposer(); renderPhone(); renderCommands(); if ($('settings').open) renderSettings();
+  $('commands-tab').hidden = !state.terminal; if (!state.terminal && sidePane === 'commands') showPane('table');
+  if (previous && previous.project.folder !== state.project.folder) { changes = null; if (sidePane === 'changes') loadChanges(); }
+  const waiting = (state.approvals || []).length;
+  if (waiting > (previous?.approvals || []).length) { const request = state.approvals.at(-1); notify('Permission needed', request.detail.slice(0, 120)); window.SharedTablePet?.say((agentOf(request.agent)?.label || 'An agent') + ' needs your OK to use ' + request.tool + '.', 9000); }
+  window.SharedTablePet?.signal(state.active ? 'working' : 'idle');
   if (previous?.remote && JSON.stringify([previous.remote.lan, previous.remote.tunnel]) !== JSON.stringify([state.remote?.lan, state.remote?.tunnel])) refreshQR();
 }
 
@@ -433,6 +463,8 @@ function connect() {
     if (event.type === 'state') render(event);
     else if (event.type === 'reply' && state) patchReply(event);
     else if (event.type === 'notice') fail(event);
+    else if (event.type === 'terminal' && state?.terminal) { const at = state.terminal.findIndex(entry => entry.id === event.entry.id); if (at >= 0) state.terminal[at] = event.entry; else state.terminal.push(event.entry); renderCommands(); }
+    else if (event.type === 'done') { const turn = state?.conversation.turns.find(item => item.id === event.turnId), failed = turn ? Object.entries(turn.replies).filter(([, reply]) => reply.status === 'error').map(([id]) => agentOf(id)?.label || id) : []; window.SharedTablePet?.signal('finished'); window.SharedTablePet?.say(failed.length ? failed.join(' and ') + ' could not finish. The rest is ready.' : 'Finished. Have a look.', 6000); notify('Agents finished', $('title').textContent); loadChanges(true); }
   };
   events.onerror = () => { if (state) $('hint').textContent = 'Connection lost. Reconnecting…'; };
 }
@@ -441,6 +473,15 @@ async function start() {
   let theme = null, accent = '';
   try { theme = localStorage.getItem('st-theme'); accent = localStorage.getItem('st-accent') || ''; } catch { /* private mode */ }
   applyLook(THEMES.some(item => item[0] === theme) ? theme : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light', accent);
+  if (window.SharedTablePet) {
+    window.SharedTablePet.mount($('pet'), $('pet-bubble'), {
+      // The pet walks along the top edge of the message box.
+      bounds: () => { const box = $('compose').getBoundingClientRect(); return box.width ? { left: box.left, right: box.right, y: box.top + 14 } : { left: 0, right: innerWidth, y: innerHeight - 70 }; },
+      onMenu: openPetMenu, onPet: petStatus,
+    });
+    window.SharedTablePet.choose(prefs.get('pet'));
+  }
+  if (prefs.get('order') === 'sequence') setOrder('sequence');
   const token = /[#&]pair=([\w-]+)/.exec(location.hash)?.[1];
   if (token) {
     history.replaceState(null, '', location.pathname);
@@ -490,34 +531,250 @@ function applyLook(theme, accent) {
   try { localStorage.setItem('st-theme', theme); localStorage.setItem('st-accent', accent || ''); } catch { /* private mode */ }
   document.querySelector('meta[name=theme-color]').content = THEMES.find(item => item[0] === theme)?.[2] || '#0f100e';
 }
-function openAppearance() {
-  const menu = $('appearance-menu'), root = document.documentElement;
-  if (!menu.hidden) { menu.hidden = true; return; }
-  const draw = () => {
-    menu.replaceChildren(el('p', '', 'Theme'));
-    for (const [id, label, a, b] of THEMES) {
-      const button = el('button', root.dataset.theme === id ? 'on' : ''); button.type = 'button';
-      const preview = el('span', 'preview'); preview.style.setProperty('--a', a); preview.style.setProperty('--b', b);
-      button.append(preview, label); button.addEventListener('click', () => { applyLook(id, ''); draw(); }); menu.append(button);
-    }
-    menu.append(el('hr'), el('p', '', 'Accent colour'));
-    const row = el('div', 'swatches');
-    for (const [id, label, color] of ACCENTS) { const dot = el('button', (root.dataset.accent || '') === id ? 'on' : ''); dot.type = 'button'; dot.title = label; dot.setAttribute('aria-label', label); dot.style.setProperty('--swatch', color); dot.addEventListener('click', () => { applyLook(root.dataset.theme, id); draw(); }); row.append(dot); }
-    menu.append(row);
-  };
-  draw(); menu.hidden = false;
-  const box = $('theme').getBoundingClientRect();
-  menu.style.left = Math.max(8, Math.min(box.left, innerWidth - menu.offsetWidth - 8)) + 'px';
-  menu.style.top = Math.max(8, box.top - menu.offsetHeight - 6) + 'px';
+const prefs = { get: (key, fallback = '') => { try { return localStorage.getItem('st-' + key) ?? fallback; } catch { return fallback; } }, set: (key, value) => { try { localStorage.setItem('st-' + key, value); } catch { /* private mode */ } } };
+function notify(title, body) {
+  if (prefs.get('notify') !== '1' || !document.hidden || !('Notification' in window) || Notification.permission !== 'granted') return;
+  try { new Notification('Shared Table: ' + title, { body, icon: '/icon-192.png', tag: 'shared-table' }); } catch { /* not allowed here */ }
 }
-$('theme').addEventListener('click', event => { event.stopPropagation(); openAppearance(); });
-$('order').addEventListener('click', event => { const button = event.target.closest('button'); if (!button) return; order = button.dataset.order; for (const item of $('order').children) item.classList.toggle('on', item === button); });
+
+// ---------------------------------------------------------------- side panes: table, changes, commands
+let sidePane = 'table', changes = null, openDiff = null;
+function showPane(name) {
+  sidePane = name;
+  for (const button of $('side-tabs').children) button.classList.toggle('on', button.dataset.pane === name);
+  for (const pane of ['table', 'changes', 'commands', 'preview']) $('pane-' + pane).hidden = pane !== name;
+  $('app').classList.toggle('wide-side', name === 'preview');
+  if (name === 'preview' && !$('preview-frame').src && prefs.get('preview')) loadPreview(prefs.get('preview'));
+  if (name === 'changes') loadChanges();
+}
+async function loadChanges(quiet) {
+  if (quiet && sidePane !== 'changes' && !state?.project.repo) return;
+  try { changes = await post('/api/changes'); } catch (error) { changes = { repo: false, targets: [], error: error.message }; }
+  renderChanges();
+}
+function renderChanges() {
+  if (!changes) return;
+  const total = changes.targets.reduce((sum, place) => sum + place.files.length, 0);
+  $('changes-count').textContent = total ? String(total) : '';
+  $('changes-sub').textContent = changes.isolated ? 'Each agent works in its own copy; apply what you want to keep' : 'What differs from the last commit';
+  if (!changes.repo) return $('changes').replaceChildren(el('div', 'entries-empty', 'This project folder is not a git repository, so changes cannot be tracked. Run "git init" in it to see what agents change and to revert it.'));
+  $('changes').replaceChildren(...changes.targets.map(place => {
+    const box = tint(el('div', 'place'), place.id), head = el('div', 'place-head');
+    head.append(el('i'), el('span', '', place.label), el('small', '', place.files.length ? place.files.length + (place.files.length === 1 ? ' file' : ' files') : 'no changes'));
+    box.append(head);
+    if (!place.files.length) box.append(el('div', 'place-empty', place.id === 'project' ? 'Nothing has changed since the last commit.' : 'Nothing waiting in this agent’s copy.'));
+    for (const file of place.files) {
+      const row = el('button', 'file-row' + (openDiff?.target === place.id && openDiff.file === file.path ? ' on' : '')); row.type = 'button';
+      row.append(el('b', 's-' + file.status, file.status === '?' ? '+' : file.status), el('span', '', file.path));
+      row.addEventListener('click', () => showDiff(place.id, file.path));
+      box.append(row);
+    }
+    if (place.id !== 'project' && place.files.length && state.role === 'owner') {
+      const actions = el('div', 'place-actions'), apply = el('button', 'button primary', 'Apply to project'), discard = el('button', 'button danger', 'Discard');
+      apply.type = discard.type = 'button';
+      apply.addEventListener('click', () => post('/api/worktree', { target: place.id, op: 'apply' }).then(() => loadChanges(), fail));
+      discard.addEventListener('click', () => { if (confirm('Throw away everything ' + place.label + ' changed in its copy?')) post('/api/worktree', { target: place.id, op: 'discard' }).then(() => { closeDiff(); loadChanges(); }, fail); });
+      actions.append(apply, discard); box.append(actions);
+    }
+    return box;
+  }));
+}
+async function showDiff(target, file) {
+  openDiff = { target, file }; renderChanges();
+  $('diff').hidden = false; $('diff-name').textContent = file; $('diff-revert').hidden = state.role !== 'owner'; $('diff-text').textContent = 'Loading…';
+  try {
+    const { text } = await post('/api/diff', { target, file });
+    $('diff-text').replaceChildren(...(text || 'No differences.').split('\n').map(line => el('div', line.startsWith('+') && !line.startsWith('+++') ? 'add' : line.startsWith('-') && !line.startsWith('---') ? 'del' : line.startsWith('@@') ? 'hunk' : '', line || ' ')));
+  } catch (error) { $('diff-text').textContent = error.message; }
+}
+function closeDiff() { openDiff = null; $('diff').hidden = true; if (changes) renderChanges(); }
+function loadPreview(address) {
+  let url = String(address || '').trim(); if (!url) return;
+  if (/^\d+$/.test(url)) url = 'http://localhost:' + url; else if (!/^https?:\/\//i.test(url)) url = (/^(localhost|127\.0\.0\.1)(:|\/|$)/.test(url) ? 'http://' : 'https://') + url;
+  try { url = new URL(url).href; } catch { return fail('That is not a web address.'); }
+  $('preview-url').value = url; prefs.set('preview', url);
+  $('preview-empty').hidden = true; $('preview-frame').hidden = false; $('preview-frame').src = url;
+}
+function renderCommands() {
+  if (!state?.terminal) return;
+  const box = $('commands'), stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  if (!state.terminal.length) return box.replaceChildren(el('div', 'entries-empty', 'Run a command in the project folder without leaving the page: tests, a build, git status. Send the output to the agents with one click. Commands cannot ask for keyboard input.'));
+  box.replaceChildren(...state.terminal.map(entry => {
+    const card = el('div', 'command'), head = el('div', 'command-head'), actions = el('div', 'command-actions');
+    head.append(el('code', '', entry.command), el('small', entry.running ? '' : entry.exitCode === 0 ? 'good' : 'bad', entry.running ? 'running…' : entry.exitCode === 0 ? 'done' : 'exit ' + entry.exitCode));
+    const out = el('pre', '', entry.output || (entry.running ? '' : '(no output)')); card.append(head, out);
+    if (entry.running) { const stop = el('button', 'button danger', 'Stop'); stop.type = 'button'; stop.addEventListener('click', () => post('/api/terminal/stop', { id: entry.id }).catch(fail)); actions.append(stop); }
+    else {
+      const share = el('button', 'button ghost', 'Send output to chat'); share.type = 'button';
+      share.addEventListener('click', () => { addFiles([new File(['$ ' + entry.command + '\n' + entry.output + '\n(exit ' + entry.exitCode + ')\n'], 'command-output.txt', { type: 'text/plain' })]); setView('chat'); $('message').focus(); });
+      const again = el('button', 'button ghost', 'Run again'); again.type = 'button'; again.addEventListener('click', () => post('/api/terminal/run', { command: entry.command }).catch(fail));
+      actions.append(share, again);
+    }
+    card.append(actions); queueMicrotask(() => { out.scrollTop = out.scrollHeight; });
+    return card;
+  }));
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+
+// ---------------------------------------------------------------- projects
+function openProjects() {
+  const menu = $('project-menu');
+  if (!menu.hidden) { menu.hidden = true; return; }
+  if (state.role !== 'owner') return;
+  menu.replaceChildren(el('p', '', 'Projects'));
+  for (const item of state.projects || []) {
+    const button = el('button', item.folder === state.project.folder ? 'on' : ''); button.type = 'button'; button.title = item.folder; button.append(item.name);
+    button.addEventListener('click', () => { menu.hidden = true; if (item.folder !== state.project.folder) post('/api/project', { folder: item.folder }).catch(fail); });
+    menu.append(button);
+  }
+  menu.append(el('hr'));
+  const open = el('button', '', 'Open another folder…'); open.type = 'button';
+  open.addEventListener('click', () => { menu.hidden = true; const folder = prompt('Full path of the project folder', state.project.folder); if (folder && folder.trim()) post('/api/project', { folder: folder.trim() }).catch(fail); });
+  menu.append(open);
+  menu.hidden = false;
+  const box = $('project-open').getBoundingClientRect();
+  menu.style.left = box.left + 'px'; menu.style.top = box.bottom + 4 + 'px';
+}
+
+// ---------------------------------------------------------------- settings
+function renderSettings() {
+  const body = $('settings-body'), root = document.documentElement, owner = state.role === 'owner', busy = !!state.active, scroll = body.scrollTop;
+  const section = title => el('h3', '', title);
+  const row = (title, help, control, off) => { const line = el('div', 'setting' + (off ? ' off' : '')), text = el('div'); text.append(el('b', '', title), el('small', '', help)); line.append(text, control); return line; };
+  const toggle = (checked, onChange) => { const wrap = el('label', 'toggle'), input = el('input'); input.type = 'checkbox'; input.checked = checked; input.addEventListener('change', () => onChange(input.checked)); wrap.append(input, el('span', 'switch')); return wrap; };
+  const choice = (value, options, onChange) => { const select = el('select'); for (const [id, label] of options) { const option = el('option', '', label); option.value = id; option.selected = id === value; select.append(option); } select.addEventListener('change', () => onChange(select.value)); return select; };
+  const save = change => post('/api/settings', change).catch(error => { fail(error); renderSettings(); });
+  const nodes = [section('Theme')];
+
+  const themes = el('div', 'theme-grid');
+  for (const [id, label, a, b] of THEMES) { const card = el('button', 'theme-card' + (root.dataset.theme === id ? ' on' : '')); card.type = 'button'; const swatch = el('i'); swatch.style.setProperty('--a', a); swatch.style.setProperty('--b', b); card.append(swatch, el('span', '', label)); card.addEventListener('click', () => { applyLook(id, ''); renderSettings(); }); themes.append(card); }
+  const accents = el('div', 'swatches');
+  for (const [id, label, color] of ACCENTS) { const dot = el('button', (root.dataset.accent || '') === id ? 'on' : ''); dot.type = 'button'; dot.title = label; dot.setAttribute('aria-label', label); dot.style.setProperty('--swatch', color); dot.addEventListener('click', () => { applyLook(root.dataset.theme, id); renderSettings(); }); accents.append(dot); }
+  nodes.push(themes, row('Accent colour', 'Buttons, your messages and highlights.', accents));
+
+  nodes.push(section('Companion'));
+  const pets = el('div', 'pet-grid'), current = prefs.get('pet');
+  for (const [id, label, image] of [['', 'None', null], ['flick', 'Flick the fox', '/pets/flick-sit.webp'], ['perle', 'Perle the kitten', '/pets/perle-sit.png']]) {
+    const card = el('button', 'pet-card' + (current === id ? ' on' : '')); card.type = 'button';
+    if (image) { const picture = el('img'); picture.src = image; picture.alt = ''; card.append(picture); } else card.append(el('span', 'none', '—'));
+    card.append(label); card.addEventListener('click', () => { prefs.set('pet', id); window.SharedTablePet?.choose(id); renderSettings(); }); pets.append(card);
+  }
+  nodes.push(pets);
+
+  nodes.push(section('On this device'));
+  nodes.push(row('Notifications', 'Tell me when agents finish or need permission while this tab is in the background.', toggle(prefs.get('notify') === '1' && 'Notification' in window && Notification.permission === 'granted', async on => { if (on && 'Notification' in window && Notification.permission !== 'granted') await Notification.requestPermission(); prefs.set('notify', on && 'Notification' in window && Notification.permission === 'granted' ? '1' : '0'); renderSettings(); }), !('Notification' in window)));
+  nodes.push(row('Send in turn by default', 'Agents go one after another instead of all at once.', toggle(prefs.get('order') === 'sequence', on => { prefs.set('order', on ? 'sequence' : 'parallel'); setOrder(on ? 'sequence' : 'parallel'); })));
+
+  if (owner) {
+    const settings = state.settings;
+    nodes.push(section('What agents may do' + (busy ? ' (locked while agents are working)' : '')));
+    nodes.push(row('Mode', 'Advise: answer only. Read: may read the project. Build: may edit files and run commands.', choice(settings.mode, [['advise', 'Advise'], ['read', 'Read'], ['build', 'Build']], mode => save({ mode })), busy));
+    nodes.push(row('Ask me before commands', 'In build mode, Claude Code asks in the chat before running a command or anything beyond a file edit. Off: such actions are refused. Codex has no such channel; its sandbox decides.', toggle(settings.approvals === 'ask', on => save({ approvals: on ? 'ask' : 'deny' })), busy));
+    nodes.push(row('Phones may answer permission requests', 'Paired phones can allow or deny what agents ask for.', toggle(settings.phoneApprovals, on => save({ phoneApprovals: on })), busy));
+    nodes.push(row('One copy of the project per agent', 'Build mode: each agent edits its own git worktree, and you apply the result from the Changes tab. Needs a git repository' + (state.project.repo ? '.' : ' (this folder is not one).'), toggle(settings.isolation === 'worktree', on => save({ isolation: on ? 'worktree' : 'shared' })), busy || !state.project.repo));
+    nodes.push(row('Keep each agent’s own session', 'Agents remember their own work between messages and can be resumed in their own app.', toggle(settings.sessions === 'native', on => save({ sessions: on ? 'native' : 'stateless' })), busy));
+    nodes.push(row('Full Claude Code harness', 'Build mode: also load your personal MCP servers, plugins and slash commands. Uses much more of your Claude allowance per message.', toggle(settings.fullHarness, on => save({ fullHarness: on })), busy));
+    nodes.push(row('Commands tab', 'Run shell commands in the project folder from this page. Host computer only.', toggle(settings.terminal, on => save({ terminal: on })), busy));
+  }
+  nodes.push(section('About'));
+  nodes.push(el('p', 'fineprint', 'Shared Table ' + state.version + ' · open source · part of RegesCore by LIKE A KING INC. · project folder: ' + state.project.folder));
+  body.replaceChildren(...nodes); body.scrollTop = scroll;
+}
+// ---------------------------------------------------------------- the pet as a small helper
+function petStatus() {
+  if (!state) return;
+  const pending = (state.approvals || []).length, tasks = (state.conversation.board || []).filter(item => item.kind === 'task' && !item.done).length;
+  const limited = state.agents.filter(agent => agent.limit?.status === 'reached').map(agent => agent.label), down = state.agents.filter(agent => !agent.ready && !agent.checking).map(agent => agent.label);
+  window.SharedTablePet.say(pending ? pending + (pending === 1 ? ' request is' : ' requests are') + ' waiting for your OK.' : state.active ? 'The agents are working. I will tell you when they finish.' : limited.length ? limited.join(' and ') + (limited.length === 1 ? ' has' : ' have') + ' hit the usage limit.' : down.length ? down.join(' and ') + (down.length === 1 ? ' is' : ' are') + ' not ready. Check the sidebar.' : tasks ? tasks + (tasks === 1 ? ' open task' : ' open tasks') + ' on the table. Right-click me for shortcuts.' : 'All quiet. Right-click me for search and shortcuts.');
+}
+function openPetMenu(px, py) {
+  const menu = $('pet-menu'), pet = window.SharedTablePet;
+  const close = () => { menu.hidden = true; };
+  const add = (label, action, cls) => { const button = el('button', cls || '', label); button.type = 'button'; button.addEventListener('click', () => { close(); action(); }); menu.append(button); return button; };
+  const search = el('input'); search.type = 'search'; search.placeholder = 'Search conversations and the table…'; search.setAttribute('aria-label', 'Search');
+  const results = el('div'), actions = el('div');
+  const find = () => {
+    const query = search.value.trim().toLowerCase(); results.replaceChildren(); actions.hidden = !!query;
+    if (!query) return;
+    const hits = [];
+    for (const item of state.conversations) if (item.title.toLowerCase().includes(query)) hits.push([item.title, 'conversation', () => post('/api/switch', { id: item.id }).then(() => setView('chat')).catch(fail)]);
+    for (const item of state.conversation.board || []) if (item.text.toLowerCase().includes(query)) hits.push([item.text, item.kind, () => { showPane('table'); setView('board'); }]);
+    state.conversation.turns.forEach(turn => { if (turn.message.toLowerCase().includes(query)) hits.push([turn.message, 'message', () => { setView('chat'); document.getElementById('turn-' + turn.id)?.scrollIntoView({ block: 'start' }); }]); });
+    if (!hits.length) return results.append(el('p', '', 'Nothing found'));
+    for (const [text, kind, go] of hits.slice(0, 7)) { const button = el('button', 'hit'); button.type = 'button'; button.append(el('span', '', text), el('small', '', kind)); button.addEventListener('click', () => { close(); go(); }); results.append(button); }
+  };
+  search.addEventListener('input', find);
+  search.addEventListener('keydown', event => { if (event.key === 'Enter') results.querySelector('button')?.click(); if (event.key === 'Escape') close(); });
+  menu.replaceChildren(search, results, actions);
+  const into = (label, action, cls) => { const button = add(label, action, cls); actions.append(button); return button; };
+  const pending = (state.approvals || []).length;
+  if (pending) into('Show ' + pending + (pending === 1 ? ' permission request' : ' permission requests'), () => { setView('chat'); document.querySelector('.approval')?.scrollIntoView({ block: 'center' }); });
+  if (state.active) into('Stop all agents', () => post('/api/cancel').catch(fail), 'danger');
+  into('New conversation', () => $('new').click());
+  for (const agent of state.agents) into('Ask ' + agent.label + '…', () => { const box = $('message'); if (!new RegExp('@' + agent.id + '\\b', 'i').test(box.value)) box.value = '@' + agent.id + ' ' + box.value; setView('chat'); box.focus(); });
+  if (!$('review').disabled && !$('review').hidden) into('Cross-review the last answers', () => sendMessage('review'));
+  into('What changed in the project?', () => { showPane('changes'); setView('board'); });
+  actions.append(el('hr'));
+  actions.append(el('p', '', pet.current()));
+  const poses = el('div', 'poses'); for (const pose of pet.poses()) { const button = el('button', '', pose[0].toUpperCase() + pose.slice(1)); button.type = 'button'; button.addEventListener('click', () => { close(); pet.act(pose); }); poses.append(button); }
+  actions.append(poses);
+  into(pet.perched() ? 'Wander again' : 'Stay where I put you (drag me)', () => { if (pet.perched()) pet.wander(); else pet.say('Drag me anywhere and I will stay there.'); });
+  into('Settings', () => $('settings-open').click());
+  into('Let ' + pet.current().split(' ')[0] + ' rest', () => { prefs.set('pet', ''); pet.choose(''); });
+  menu.hidden = false;
+  menu.style.left = Math.max(8, Math.min(px, innerWidth - menu.offsetWidth - 8)) + 'px';
+  menu.style.top = Math.max(8, Math.min(py - menu.offsetHeight - 6, innerHeight - menu.offsetHeight - 8)) + 'px';
+  if (!matchMedia('(max-width: 980px)').matches) search.focus();
+}
+function hello() {
+  const box = $('hello'), logo = el('span', 'logo'); logo.append(el('i'), el('i'), el('i'));
+  const links = el('div', 'links');
+  for (const [label, host] of [['Developer', 'davidio.dev'], ['Company', 'likeakinginc.com'], ['Reges', 'regescore.pro'], ['Reges Code', 'regescode.com'], ['RegesARC', 'regesarc.com']]) { const link = el('a'); link.href = 'https://' + host; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.append(el('b', '', label), el('span', '', host)); links.append(link); }
+  const close = el('button', 'button primary', 'Madloba'); close.type = 'button'; close.addEventListener('click', () => box.close());
+  box.replaceChildren(logo, el('h2', '', 'Gamarjoba'), el('div', 'who', 'David · Davidio / Dev'), el('p', '', 'Founder of LIKE A KING INC. · creator of RegesCore'), el('p', '', 'Shared Table ' + (state?.version || '') + ' was designed and built under his direction.'), links, close);
+  box.showModal(); window.SharedTablePet?.signal('finished');
+}
+let partnerList = null;
+async function openPartners() {
+  $('partners').showModal();
+  const body = $('partners-body');
+  if (!partnerList) { body.replaceChildren(el('p', 'fineprint', 'Loading…')); try { partnerList = await fetch('/partners.json').then(response => response.json()); } catch { return body.replaceChildren(el('p', 'fineprint', 'Could not load the list.')); } }
+  const nodes = [];
+  for (const group of [...new Set(partnerList.map(item => item.group))]) {
+    const grid = el('div', 'partner-grid');
+    for (const item of partnerList.filter(entry => entry.group === group)) {
+      const host = new URL(item.url).hostname.replace(/^www\./, ''), card = el('a', 'partner'), shot = el('div', 'shot'), text = el('div', 'body'), title = el('b', '', item.name);
+      card.href = item.url; card.target = '_blank'; card.rel = 'noopener noreferrer';
+      if (item.live) shot.style.backgroundImage = 'url(/partners/' + host.replace(/\./g, '-') + '.jpg)'; else shot.textContent = 'Coming soon';
+      title.append(el('i', item.live ? 'live' : 'soon', item.live ? 'Live' : 'Soon'));
+      text.append(title, el('p', '', item.text), el('small', '', host + (item.live ? '  ↗' : '')));
+      card.append(shot, text); grid.append(card);
+    }
+    nodes.push(el('h3', '', group), grid);
+  }
+  body.replaceChildren(...nodes);
+}
+$('partners-open').addEventListener('click', openPartners);
+function setOrder(value) { order = value; for (const item of $('order').children) item.classList.toggle('on', item.dataset.order === value); }
+$('settings-open').addEventListener('click', () => { $('settings').showModal(); renderSettings(); });
+$('project-open').addEventListener('click', event => { event.stopPropagation(); openProjects(); });
+$('side-tabs').addEventListener('click', event => { const button = event.target.closest('button'); if (button) showPane(button.dataset.pane); });
+$('changes-refresh').addEventListener('click', () => loadChanges());
+$('preview-form').addEventListener('submit', event => { event.preventDefault(); loadPreview($('preview-url').value); });
+$('preview-reload').addEventListener('click', () => { const frame = $('preview-frame'); if (frame.src) { const url = frame.src; frame.src = 'about:blank'; setTimeout(() => { frame.src = url; }, 30); } });
+$('preview-external').addEventListener('click', () => { if ($('preview-frame').src) open($('preview-frame').src, '_blank', 'noopener'); });
+$('diff-close').addEventListener('click', closeDiff);
+$('diff-revert').addEventListener('click', () => { if (openDiff && confirm('Put "' + openDiff.file + '" back to the last committed version? This cannot be undone.')) post('/api/revert', openDiff).then(() => { closeDiff(); loadChanges(); }, fail); });
+$('commands-clear').addEventListener('click', () => post('/api/terminal/clear').catch(fail));
+$('command-form').addEventListener('submit', event => { event.preventDefault(); const command = $('command-text').value.trim(); if (command) post('/api/terminal/run', { command }).then(() => { $('command-text').value = ''; }, fail); });
+$('order').addEventListener('click', event => { const button = event.target.closest('button'); if (button) setOrder(button.dataset.order); });
 $('tabs').addEventListener('click', event => { const button = event.target.closest('button'); if (button) setView(button.dataset.view); });
 $('phone-open').addEventListener('click', () => { $('phone').showModal(); renderPhone(); refreshQR(); });
 $('phone').addEventListener('close', () => clearTimeout(pairTimer));
 $('lan-toggle').addEventListener('change', event => setRemote({ lan: event.target.checked }, $('lan-option')));
 $('tunnel-toggle').addEventListener('change', event => setRemote({ tunnel: event.target.checked }, $('tunnel-option')));
 $('qr-switch').addEventListener('click', event => { const button = event.target.closest('button'); if (button) { pairVia = button.dataset.via; refreshQR(); } });
-document.addEventListener('click', event => { if (!event.target.closest('#conversation-menu')) closeMenu(); if (!event.target.closest('#appearance-menu')) $('appearance-menu').hidden = true; });
-document.addEventListener('keydown', event => { if (event.key === 'Escape') { closeMenu(); $('appearance-menu').hidden = true; } });
+document.addEventListener('click', event => { if (!event.target.closest('#conversation-menu')) closeMenu(); if (!event.target.closest('#project-menu')) $('project-menu').hidden = true; if (!event.target.closest('#pet-menu')) $('pet-menu').hidden = true; });
+document.addEventListener('keydown', event => { if (event.key === 'Escape') { closeMenu(); $('project-menu').hidden = true; } });
+document.addEventListener('pointerdown', () => window.SharedTablePet?.signal('wake'));
 start().catch(error => showPairing('Could not reach Shared Table: ' + error.message));

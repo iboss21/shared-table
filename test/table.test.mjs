@@ -158,9 +158,17 @@ test('agent commands: no shell, sealed in advise mode, own session and full harn
   const advise = claude.args({ mode: 'advise', config, policy }).args;
   assert.equal(advise[advise.indexOf('--tools') + 1], '');
   assert.ok(advise.includes('--no-session-persistence') && advise.includes('--strict-mcp-config') && advise.at(-1) === '-p');
-  const build = claude.args({ mode: 'build', config, policy, session: { id: 'abc', resume: true } }).args;
+  const made = claude.args({ mode: 'build', config, policy, session: { id: 'abc', resume: true } });
+  const build = made.args;
   assert.deepEqual(build.slice(build.indexOf('--resume'), build.indexOf('--resume') + 2), ['--resume', 'abc']);
-  assert.ok(!build.includes('--safe-mode') && !build.includes('--strict-mcp-config') && !build.includes('--no-session-persistence'));
+  assert.ok(!build.includes('--safe-mode') && !build.includes('--no-session-persistence'));
+  assert.equal(made.protocol, 'claude-stream', 'build mode asks the supervisor for permission');
+  assert.ok(build.includes('--permission-prompt-tool') && !build[build.indexOf('--allowedTools') + 1].includes('Bash'));
+  assert.ok(build.includes('--strict-mcp-config'), 'personal MCP servers stay out unless full harness is on');
+  assert.ok(!claude.args({ mode: 'build', config: { ...config, fullHarness: true }, policy }).args.includes('--strict-mcp-config'));
+  const noAsk = claude.args({ mode: 'build', config: { ...config, approvals: 'deny' }, policy });
+  assert.equal(noAsk.protocol, 'plain');
+  assert.ok(noAsk.args.includes('--permission-prompts'));
   const codexAdvise = codex.args({ mode: 'advise', config, policy }).args;
   assert.ok(codexAdvise.includes('sandbox_mode="read-only"') && codexAdvise.includes('--ephemeral') && codexAdvise.includes('shell_tool'));
   const codexBuild = codex.args({ mode: 'build', config, policy, session: { id: 'thread-1', resume: true } }).args;
@@ -171,9 +179,9 @@ test('agent commands: no shell, sealed in advise mode, own session and full harn
   assert.equal(agentEnv({ OPENAI_API_KEY: 'x' }, { allowApiKeys: true }).OPENAI_API_KEY, 'x');
   assert.throws(() => resolveAgents({ ...config, agents: 'nope' }, { PATH: '' }), /Unknown agent/);
   const custom = resolveAgents({ ...config, agents: 'local', customAgents: [{ id: 'local', label: 'Local', command: 'ollama', args: ['run', 'llama3', '{prompt}'] }] }, { PATH: '' })[0];
-  const made = custom.args({ policy: 'P', prompt: '{}' });
-  assert.equal(made.stdin, false);
-  assert.equal(made.args[2], 'P\n\nINPUT (JSON):\n{}');
+  const customMade = custom.args({ policy: 'P', prompt: '{}' });
+  assert.equal(customMade.stdin, false);
+  assert.equal(customMade.args[2], 'P\n\nINPUT (JSON):\n{}');
 });
 
 test('QR codes have the right geometry for short and long pairing links', () => {
@@ -260,4 +268,81 @@ test('attachments: text files are inlined for every agent, images are handed ove
   assert.equal(claudeArgs[claudeArgs.indexOf('--add-dir') + 1], '/tmp/a');
   const codexArgs = codex.args({ mode: 'advise', config, policy: 'P', attachments: files }).args;
   assert.deepEqual(codexArgs.slice(0, 4), ['exec', '--image', '/tmp/a/shot.png', '--skip-git-repo-check']);
+});
+
+test('approvals: a permission request from an agent waits in the chat until the supervisor answers; stop and retry work per agent', async t => {
+  const asked = [];
+  const { post, state, settle } = await table(t, { argv: ['--mode', 'build'], runner: async (agent, prompt, options) => {
+    if (agent.id === 'codex') { await new Promise(resolve => options.signal.addEventListener('abort', resolve, { once: true })); return { status: 'cancelled', text: '' }; }
+    const decision = await options.onApproval({ tool: 'Bash', input: { command: 'npm install' }, description: 'Install packages' });
+    asked.push(decision.allow);
+    return { status: 'complete', text: decision.allow ? 'installed' : 'not allowed' };
+  } });
+  await post('/api/message', { clientId: id(), message: 'set it up' });
+  let view;
+  for (let i = 0; i < 100 && !(view = await state()).approvals.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual([view.approvals[0].agent, view.approvals[0].tool, view.approvals[0].detail], ['claude', 'Bash', 'npm install']);
+  assert.equal((await post('/api/approve', { id: view.approvals[0].id, decision: 'allow' })).status, 200);
+  assert.equal((await post('/api/approve', { id: view.approvals[0].id, decision: 'allow' })).status, 404);
+  await post('/api/cancel', { agent: 'codex' });
+  let turn = (await settle()).conversation.turns[0];
+  assert.deepEqual([turn.replies.claude.text, turn.replies.codex.status], ['installed', 'cancelled']);
+  assert.deepEqual(asked, [true]);
+  assert.equal((await post('/api/retry', { agent: 'claude' })).status, 202);
+  for (let i = 0; i < 100 && !(view = await state()).approvals.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  await post('/api/approve', { id: view.approvals[0].id, decision: 'deny' });
+  turn = (await settle()).conversation.turns[0];
+  assert.equal(turn.replies.claude.text, 'not allowed');
+  assert.equal(turn.replies.codex.status, 'cancelled', 'retrying one agent leaves the other alone');
+});
+
+test('changes, worktrees, command panel, settings and project switching', async t => {
+  const { execFileSync } = await import('node:child_process');
+  const project = await fs.mkdtemp(path.join(os.tmpdir(), 'shared-table-project-'));
+  const other = await fs.mkdtemp(path.join(os.tmpdir(), 'shared-table-other-'));
+  t.after(() => Promise.all([fs.rm(project, { recursive: true, force: true }), fs.rm(other, { recursive: true, force: true })]));
+  const gitDo = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: project, stdio: 'pipe' });
+  await fs.writeFile(path.join(project, 'a.txt'), 'one\n');
+  gitDo('init', '-q'); gitDo('add', '-A'); gitDo('commit', '-q', '-m', 'init');
+  const cwds = {};
+  const { instance, post, state, settle } = await table(t, { argv: [project, '--mode', 'build', '--isolation', 'worktree'], runner: async (agent, prompt, options) => { cwds[agent.id] = options.cwd; await fs.writeFile(path.join(options.cwd, agent.id + '.txt'), 'by ' + agent.id + '\n'); return { status: 'complete', text: 'done' }; } });
+  assert.equal((await state()).project.repo, true);
+  await post('/api/message', { clientId: id(), message: 'each add a file' }); await settle();
+  assert.notEqual(cwds.claude, cwds.codex);
+  assert.notEqual(cwds.claude, project);
+  let changes = await (await post('/api/changes', {})).json();
+  assert.deepEqual(changes.targets.find(item => item.id === 'claude').files, [{ path: 'claude.txt', status: '?' }]);
+  assert.match((await (await post('/api/diff', { target: 'claude', file: 'claude.txt' })).json()).text, /\+by claude/);
+  assert.equal((await (await post('/api/worktree', { agent: 'x', target: 'claude', op: 'apply' })).json()).applied, 1);
+  assert.equal(await fs.readFile(path.join(project, 'claude.txt'), 'utf8'), 'by claude\n');
+  await post('/api/worktree', { target: 'codex', op: 'discard' });
+  changes = await (await post('/api/changes', {})).json();
+  assert.equal(changes.targets.find(item => item.id === 'codex').files.length, 0);
+  assert.equal((await post('/api/diff', { target: 'project', file: '../../etc/passwd' })).status, 400);
+  await post('/api/revert', { target: 'project', file: 'claude.txt' });
+  await assert.rejects(fs.stat(path.join(project, 'claude.txt')));
+
+  assert.equal((await post('/api/terminal/run', { command: 'echo table-$((20+22))' })).status, 202);
+  let entry;
+  for (let i = 0; i < 200; i++) { entry = (await state()).terminal[0]; if (entry && !entry.running) break; await new Promise(resolve => setTimeout(resolve, 20)); }
+  assert.match(entry.output, /table-42/);
+  assert.equal(entry.exitCode, 0);
+
+  assert.equal((await post('/api/settings', { mode: 'read', terminal: false })).status, 200);
+  assert.equal((await post('/api/settings', { mode: 'chaos' })).status, 400);
+  const settings = (await state()).settings;
+  assert.deepEqual([settings.mode, settings.terminal], ['read', false]);
+  assert.equal((await post('/api/terminal/run', { command: 'echo no' })).status, 403);
+
+  const before = (await state()).conversation.id;
+  assert.equal((await post('/api/project', { folder: other })).status, 200);
+  const switched = await state();
+  assert.equal(switched.project.folder, await fs.realpath(other).then(() => other));
+  assert.notEqual(switched.conversation.id, before);
+  assert.equal(switched.project.repo, false);
+  assert.ok(switched.projects.some(item => item.folder === project));
+  assert.equal((await post('/api/project', { folder: path.join(other, 'missing') })).status, 400);
+  assert.equal((await post('/api/project', { folder: project })).status, 200);
+  assert.equal((await state()).conversation.id, before, 'switching back restores that project\'s conversation');
+  void instance;
 });

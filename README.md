@@ -47,8 +47,12 @@ Shared Table is a bridge. You type once. Every agent you addressed starts workin
 - **A shared table.** Agents post decisions, tasks, risks and open questions to a board. You can add, tick off and remove entries. Every agent sees the board with every message.
 - **Cross-review.** One click asks each agent to review the others' last answers and converge on one plan.
 - **Three levels of trust.** `advise` (no tools), `read` (agents can read your project), `build` (agents can edit files and run commands).
+- **You approve.** In build mode Claude Code asks in the chat before running a command. Allow, allow for the turn, or deny, from the desk or the phone.
+- **See what changed.** A Changes tab with the diff of every file, one-click revert, and optionally one git worktree per agent so two agents never overwrite each other.
+- **Commands and preview without leaving the page.** Run tests or a build in the Commands tab and send the output to the agents; watch your running app in the Preview tab.
+- **Stop or re-ask one agent**, see tokens and usage limits per agent, switch between project folders.
 - **Files and images.** Paste, drop or attach screenshots and files in the chat. Text files travel inside the prompt; images go to Claude Code, Codex and vision-capable API models.
-- **Organised.** Rename, pin and group conversations. Five themes and six accent colours.
+- **Organised.** Rename, pin and group conversations. A Settings page with five themes, six accent colours and two optional companions that tell you when an agent needs you.
 - **Your phone, same chat.** Scan a QR code and continue on your phone, on the same Wi-Fi or from anywhere.
 
 ## Demo
@@ -133,11 +137,34 @@ node bin/shared-table.mjs --demo
 | `read` | Read files in the project folder. | `shared-table --mode read` |
 | `build` | Edit files and run commands in the project folder, using each agent's full harness (project instructions, your settings). | `shared-table --mode build` |
 
-In `build` mode every agent works in the same folder. They are told who else is at the table, to say which files they take and never to undo each other's work, but nothing enforces it. Commit before you start, and review the diff after.
+In `build` mode every agent works in the same folder unless you turn on one worktree per agent in Settings. In a shared folder they are told who else is at the table and never to undo each other's work, but nothing enforces it: commit before you start and check the Changes tab after.
 
 <p align="center">
   <img src="docs/assets/screenshot-in-turn.png" alt="An in-turn message: Claude answers first, then Codex reviews Claude's work" width="100%">
 </p>
+
+## Supervising
+
+<p align="center">
+  <img src="docs/assets/screenshot-settings.png" alt="Settings: themes, companion and what agents may do" width="100%">
+</p>
+
+| You want to | Where |
+|---|---|
+| Answer an agent's permission request | A card appears in that agent's reply: **Allow**, **Allow all this turn**, **Deny**. Claude Code only; Codex has no such channel in non-interactive mode, so its sandbox decides. |
+| Stop one agent, or ask one again | **Stop** on a running reply, **Retry** / **Ask again** on a finished one. |
+| See and undo what agents changed | **Changes** tab: files that differ from the last commit, the diff, **Revert file**. Needs the project to be a git repository. |
+| Keep agents out of each other's way | Settings → *One copy of the project per agent*. Each agent edits its own git worktree; **Apply to project** copies its work into your folder, **Discard** throws it away. |
+| Run a command | **Commands** tab, host computer only. Output streams in; **Send output to chat** attaches it to your next message. Commands cannot ask for keyboard input. |
+| Look at the running app | **Preview** tab: type a port (`3000`) or an address. |
+| Change project | Click the project name at the top left. Each folder keeps its own conversations. |
+| Know when you are needed | Settings → *Notifications*, and the companion says so in a speech bubble. |
+
+Every toggle is in **Settings** (the gear in the sidebar): mode, approvals, worktrees, sessions, the Commands tab, whether phones may approve, theme, accent and companion.
+
+### Companions
+
+Flick the fox and Perle the kitten are optional. They pace while agents work, tell you when a run finishes or needs your OK, and nap when the table is quiet. Drag one anywhere and it stays; right-click it for search across conversations and shortcuts. The artwork belongs to LIKE A KING INC. and is not under the MIT licence; see [public/pets/LICENSE.md](public/pets/LICENSE.md).
 
 ## Files and images
 
@@ -245,6 +272,9 @@ Settings come from, in rising priority: defaults, `shared-table.config.json` in 
 | `--claude-path`, `--codex-path`, `--gemini-path` | Executable locations when not on PATH. | auto-detected |
 | `--claude-model`, `--codex-model`, `--gemini-model` | Model passed to each CLI. | each CLI's default |
 | `--timeout <seconds>` | Per-agent time limit. | 180 / 420 / 900 by mode |
+| `--isolation shared\|worktree` | Build mode: agents share the project folder, or each gets its own git worktree. | `shared` |
+| `--approvals ask\|deny` | Show permission requests in the chat, or refuse them. | `ask` |
+| `--full-harness` | Build mode: also load your personal MCP servers and plugins into Claude Code. Costs far more per message. | off |
 | `--allow-api-keys` | Keep API-key environment variables. Without it they are removed, so each CLI uses its own sign-in. | off |
 | `--data-dir` | Where conversations are saved. | `~/.shared-table/projects/<project>` |
 | `--demo` | Scripted agents; no CLI or account needed. | off |
@@ -262,6 +292,7 @@ Stated plainly, because an agent bridge that overstates itself is worse than non
 | Both agents in one real turn | Tested: Claude answered while Codex returned its usage-limit error in the same turn, and neither blocked the other (screenshot below). |
 | Gemini CLI, custom CLI agents | Argument building is unit-tested. Real runs NOT TESTED. |
 | API agents (LM Studio, Ollama, other OpenAI-compatible servers) | Streaming, key handling and failure reporting tested against a local stand-in server. NOT TESTED against LM Studio, Ollama or RegesARC themselves. |
+| Approvals, Changes, Commands, Preview | **Tested with real Claude Code** in build mode: it asked before a shell command, ran it after Allow, and the new files showed in Changes with their diff; a command ran in the Commands tab; a localhost page showed in Preview. Worktree apply/discard is covered by automated tests, NOT TESTED with a real agent. |
 | Attachments | **Tested with real Claude Code:** it described an attached image and quoted an attached text file. Codex `--image` and API vision input are NOT TESTED. |
 | Phone pairing | Tested in a browser at phone size over the Wi-Fi listener and the phone listener, and the QR code was decoded by Chrome's barcode reader. NOT TESTED on a physical phone. |
 | Tunnels (cloudflared, localhost.run) | NOT TESTED. The pairing and permission logic behind them is covered by tests with a stand-in tunnel. |
@@ -275,7 +306,7 @@ Stated plainly, because an agent bridge that overstates itself is worse than non
 <p align="center"><sub>A real run, not demo mode: Claude Code read <code>src/runner.mjs</code> and answered; Codex returned its account's usage limit, shown as-is.</sub></p>
 
 ```bash
-npm test     # 14 tests, mock agents, no model requests
+npm test     # 16 tests, mock agents, no model requests
 ```
 
 ## Limits worth knowing
@@ -283,7 +314,8 @@ npm test     # 14 tests, mock agents, no model requests
 - The agents' own account limits, prices and terms apply. Shared Table never signs in for you, buys credits or falls back to an API key.
 - Every message you send goes, with the brief, the board and recent transcript, to the provider behind each agent you address. Do not paste secrets.
 - One turn runs at a time. A conversation holds 200 turns; the last 12 are sent as shared context.
-- In `build` mode two agents can edit the same folder at once. That is the feature, and the risk.
+- In `build` mode two agents can edit the same folder at once unless you switch on one worktree per agent.
+- A build-mode message to Claude Code is not small: its own tools and instructions were about 60,000 to 85,000 tokens per turn in testing.
 - Conversations are stored unencrypted on your disk under `~/.shared-table/`.
 
 ## Repository map
@@ -294,10 +326,11 @@ src/server.mjs           HTTP server, turns, board, sessions, phone pairing
 src/agents.mjs           agent registry: Claude Code, Codex, Gemini, API servers, custom commands
 src/runner.mjs           starts one agent process and streams its output
 src/board.mjs            the shared board format
+src/workspace.mjs        git changes, per-agent worktrees, the command runner
 src/remote.mjs           Wi-Fi addresses and tunnels
 src/qr.mjs               dependency-free QR code encoder
 src/demo.mjs             scripted agents for demo mode
-public/                  the interface: one HTML file, one stylesheet, one script
+public/                  the interface: one HTML file, one stylesheet, two scripts, the pets
 test/                    node:test suite
 scripts/capture.mjs      regenerates the screenshots and the demo video
 ```
@@ -308,7 +341,7 @@ Shared Table began as two small private tools written for one project: a local p
 
 ## Roadmap
 
-Next up: approvals in the chat, per-agent stop, a changes panel with one git worktree per agent, and a terminal panel. The full plan is in [docs/ROADMAP.md](docs/ROADMAP.md).
+Next up: a full interactive terminal, approvals for Codex, a desktop app with a pet that lives outside the browser window, and saved playbooks. The full plan is in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Contributing and security
 
@@ -316,7 +349,7 @@ Pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). The trust mod
 
 ## License
 
-Released under the [MIT License](LICENSE), Copyright (c) 2026 LIKE A KING INC.
+Released under the [MIT License](LICENSE), Copyright (c) 2026 LIKE A KING INC. Use it, change it and build on it, commercially or not. Credit is appreciated, not required. The companion artwork in `public/pets/` is the one exception: it stays the property of LIKE A KING INC.
 
 Claude and Claude Code are trademarks of Anthropic. Codex is a trademark of OpenAI. Gemini is a trademark of Google. Shared Table is an independent project: it starts the CLIs you installed and is not affiliated with or endorsed by any of them.
 
