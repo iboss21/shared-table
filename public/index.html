@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#111210">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Shared Table">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Shared Table</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/style.css">
+<script defer src="/app.js"></script>
+</head>
+<body data-view="chat">
+
+<section id="pairing" class="pairing" hidden>
+  <div class="pairing-card">
+    <span class="logo" aria-hidden="true"><i></i><i></i><i></i></span>
+    <h1>Shared Table</h1>
+    <p id="pairing-text">Connecting this device…</p>
+    <ol class="pairing-steps" id="pairing-steps" hidden>
+      <li>Open Shared Table on the computer.</li>
+      <li>Choose <b>Phone</b> in the sidebar.</li>
+      <li>Scan the QR code with this device.</li>
+    </ol>
+  </div>
+</section>
+
+<div class="app" id="app" hidden>
+  <aside class="rail" id="rail" aria-label="Conversations and agents">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"><i></i><i></i><i></i></span>
+      <div><strong>Shared Table</strong><small id="project-name">&nbsp;</small></div>
+    </div>
+    <button class="button block" id="new" type="button"><span aria-hidden="true">+</span> New conversation</button>
+
+    <p class="rail-label">Conversations</p>
+    <nav class="conversations" id="conversations" aria-label="Saved conversations"></nav>
+
+    <p class="rail-label">At the table</p>
+    <div class="seats" id="seats"></div>
+
+    <div class="rail-foot">
+      <button class="button ghost" id="phone-open" type="button" title="Continue this chat on your phone">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg>Phone
+      </button>
+      <a class="button ghost" href="/api/export" download title="Download this conversation as JSON">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 19h14"/></svg>Export
+      </a>
+      <button class="button ghost icon" id="theme" type="button" title="Light or dark" aria-label="Switch between light and dark">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5Z"/></svg>
+      </button>
+    </div>
+    <p class="credit">Open source · Part of <a href="https://regescore.pro" target="_blank" rel="noopener noreferrer">RegesCore</a> by <a href="https://likeakinginc.com" target="_blank" rel="noopener noreferrer">LIKE A KING INC.</a></p>
+  </aside>
+
+  <main class="chat" aria-label="Chat">
+    <header class="chat-head">
+      <div class="chat-title">
+        <h1 id="title">New conversation</h1>
+        <p id="subtitle"></p>
+      </div>
+      <div class="chips" id="chips"></div>
+    </header>
+    <div class="transcript" id="transcript" aria-live="polite"></div>
+
+    <form class="compose" id="compose" autocomplete="off">
+      <div class="mention-menu" id="mention-menu" hidden role="listbox"></div>
+      <div class="compose-top">
+        <div class="targets" id="targets" role="group" aria-label="Who receives the next message"></div>
+        <div class="order" id="order" role="group" aria-label="How agents take the message">
+          <button type="button" data-order="parallel" class="on" title="Every addressed agent starts at once">At once</button>
+          <button type="button" data-order="sequence" title="Agents go in order; each sees what the one before it finished, for example: Claude fixes, then Codex checks">In turn</button>
+        </div>
+      </div>
+      <textarea id="message" rows="1" maxlength="8000" placeholder="Message everyone, or @mention one agent…" aria-label="Your message"></textarea>
+      <div class="compose-actions">
+        <span class="hint" id="hint"></span>
+        <button class="button ghost" id="review" type="button" title="Each agent reviews the others' last answers and converges on one plan">Cross-review</button>
+        <button class="button danger" id="cancel" type="button" hidden>Stop</button>
+        <button class="button primary" id="send" type="submit">Send <kbd>↵</kbd></button>
+      </div>
+    </form>
+    <p class="error" id="error" role="alert"></p>
+  </main>
+
+  <aside class="board" id="board" aria-label="Shared board">
+    <header class="board-head">
+      <div><h2>The table</h2><p>Shared by you and every agent</p></div>
+      <span class="count" id="board-count">0</span>
+    </header>
+
+    <details class="brief" id="brief-box">
+      <summary>Project brief <span id="brief-state">sent with every message</span></summary>
+      <textarea id="brief" rows="6" maxlength="12000" aria-label="Project brief"></textarea>
+      <p id="folder"></p>
+    </details>
+
+    <div class="filters" id="filters" role="tablist"></div>
+    <ul class="entries" id="entries"></ul>
+
+    <form class="add-entry" id="add-entry" autocomplete="off">
+      <select id="entry-kind" aria-label="Kind of entry">
+        <option value="task">Task</option><option value="decision">Decision</option><option value="risk">Risk</option><option value="question">Question</option><option value="note">Note</option>
+      </select>
+      <input id="entry-text" maxlength="400" placeholder="Add to the table…" aria-label="New board entry">
+      <button class="button icon" type="submit" aria-label="Add entry">+</button>
+    </form>
+  </aside>
+</div>
+
+<nav class="tabs" id="tabs" aria-label="Sections" hidden>
+  <button type="button" data-view="chat" class="on"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v10.5H9.5L5.5 19.5V16H4z"/></svg>Chat</button>
+  <button type="button" data-view="board"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 9h17M6 9v9m12-9v9M5 6h14"/></svg>Table <b id="tab-count"></b></button>
+  <button type="button" data-view="rail"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="9" r="3"/><circle cx="16.5" cy="9.5" r="2.5"/><path d="M2.5 19c.6-3 2.8-4.5 5.5-4.5s4.9 1.5 5.5 4.5m1.5-4.3c2.4-.5 4.9.9 5.6 4.3"/></svg>Agents</button>
+</nav>
+
+<dialog class="sheet" id="phone" aria-labelledby="phone-title">
+  <form method="dialog" class="sheet-head">
+    <div><h2 id="phone-title">Continue on your phone</h2><p>Same conversation, same agents, live on both screens.</p></div>
+    <button class="button ghost icon" aria-label="Close">×</button>
+  </form>
+  <div class="phone-grid">
+    <div class="phone-options">
+      <label class="option" id="lan-option">
+        <input type="checkbox" id="lan-toggle">
+        <span class="switch" aria-hidden="true"></span>
+        <span><b>Same Wi-Fi</b><small id="lan-text">Phones on this network can connect after scanning.</small></span>
+      </label>
+      <label class="option" id="tunnel-option">
+        <input type="checkbox" id="tunnel-toggle">
+        <span class="switch" aria-hidden="true"></span>
+        <span><b>Anywhere</b><small id="tunnel-text">Opens a private HTTPS tunnel so the phone works on mobile data.</small></span>
+      </label>
+      <p class="fineprint">Only devices that scan a code can connect. Each code works once and expires after 10 minutes. Remove a device below to cut it off.</p>
+      <p class="rail-label">Paired devices</p>
+      <ul class="devices" id="devices"></ul>
+    </div>
+    <div class="qr-panel">
+      <div class="qr-switch" id="qr-switch" hidden>
+        <button type="button" data-via="lan" class="on">Wi-Fi</button><button type="button" data-via="tunnel">Anywhere</button>
+      </div>
+      <canvas id="qr" width="264" height="264" aria-label="Pairing QR code"></canvas>
+      <p class="qr-empty" id="qr-empty">Turn on <b>Same Wi-Fi</b> or <b>Anywhere</b> to get a code.</p>
+      <p class="qr-url" id="qr-url"></p>
+    </div>
+  </div>
+</dialog>
+
+</body>
+</html>

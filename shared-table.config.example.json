@@ -1,0 +1,20 @@
+{
+  "name": "My Project",
+  "brief": "What the project is, who it is for, what is already decided. Sent to every agent with every message.",
+  "mode": "read",
+  "agents": ["claude", "codex"],
+  "sessions": "native",
+  "port": 4783,
+  "lan": false,
+  "tunnel": false,
+  "claudeModel": "",
+  "codexModel": "",
+  "customAgents": [
+    {
+      "id": "local",
+      "label": "Local model",
+      "command": "ollama",
+      "args": ["run", "llama3.1", "{prompt}"]
+    }
+  ]
+}

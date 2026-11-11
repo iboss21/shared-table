@@ -1,0 +1,22 @@
+{
+  "name": "shared-table",
+  "version": "0.1.0",
+  "description": "One chat that runs Claude Code, Codex and other coding agents side by side on your project, with a shared board and phone access by QR code.",
+  "type": "module",
+  "license": "MIT",
+  "author": "LIKE A KING INC. (https://likeakinginc.com)",
+  "contributors": ["Davidio / Dev (https://davidio.dev)"],
+  "repository": { "type": "git", "url": "git+https://github.com/iboss21/shared-table.git" },
+  "homepage": "https://github.com/iboss21/shared-table#readme",
+  "bugs": { "url": "https://github.com/iboss21/shared-table/issues" },
+  "keywords": ["claude-code", "codex", "gemini-cli", "ai-agents", "multi-agent", "coding-agents", "local-first", "developer-tools"],
+  "engines": { "node": ">=20" },
+  "bin": { "shared-table": "bin/shared-table.mjs" },
+  "files": ["bin", "src", "public", "README.md", "LICENSE"],
+  "scripts": {
+    "start": "node bin/shared-table.mjs",
+    "demo": "node bin/shared-table.mjs --demo",
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check bin/shared-table.mjs && node --check src/server.mjs && node --check src/agents.mjs && node --check src/runner.mjs && node --check public/app.js"
+  }
+}

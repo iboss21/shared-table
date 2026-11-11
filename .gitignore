@@ -1,0 +1,14 @@
+.claude/
+.codex/
+node_modules/
+.env
+.env.*
+*.log
+*.pem
+*.key
+auth.json
+credentials.json
+.DS_Store
+Thumbs.db
+.shared-table/
+dist/

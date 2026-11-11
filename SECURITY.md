@@ -1,0 +1,23 @@
+# Security
+
+Shared Table starts coding agents on your computer and can let a phone reach them. Please read this before exposing it.
+
+## Reporting a problem
+
+Open a private report at https://github.com/iboss21/shared-table/security/advisories/new. Do not put exploit details in a public issue. Reports are answered by the publisher, LIKE A KING INC.
+
+## What protects you
+
+- **Host page.** The main page is served on `127.0.0.1` only. It rejects any other `Host` header (DNS rebinding), cross-site requests and POSTs without a matching `Origin`. The session cookie is `HttpOnly` and `SameSite=Strict`.
+- **Phones.** Wi-Fi and tunnel traffic arrive on separate listeners that never grant host rights. A device gets in only by claiming a pairing code shown on the host: 144 random bits, single use, valid 10 minutes, at most 12 attempts a minute. The device then holds its own random secret; the server stores only its SHA-256 hash. Remove a device on the host to cut it off at once.
+- **What a phone can do.** Read the conversation, send messages, stop a run, edit the board, switch or start conversations. It cannot turn phone access on or off, create pairing codes, remove devices or delete conversations.
+- **Agents.** No shell is involved in starting them; prompts travel on stdin or as one argument. API-key environment variables are removed unless you pass `--allow-api-keys`, so each CLI uses its own sign-in. `advise` mode gives agents no tools; `read` mode gives read-only tools; only `build` mode lets them change files.
+- **Page.** A strict Content-Security-Policy with no inline script, and agent output is rendered as text nodes, never as HTML.
+
+## What does not protect you
+
+- `build` mode is the agents' full harness with edit and command rights in your project folder. A paired phone can send prompts to it. Pair only devices you control.
+- "Same Wi-Fi" is plain HTTP on your network. Anyone on that network can see the traffic. Use "Anywhere" (HTTPS tunnel) on networks you do not trust.
+- "Anywhere" routes through a third-party tunnel (Cloudflare quick tunnel or localhost.run). They carry your traffic; their terms apply.
+- Conversations are saved unencrypted under `~/.shared-table/`. Everything you type is also sent to the providers behind the agents you address.
+- Other software running under your user account is inside the trust boundary.
