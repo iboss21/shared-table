@@ -110,7 +110,7 @@ Options
   --sessions <kind>      native: each agent keeps its own CLI session per conversation, which you can
                                  also open in that agent's own app (default)
                          stateless: a fresh run every turn, nothing saved by the CLIs
-  --agents <ids>         comma-separated agents to seat, for example claude,codex,gemini
+  --agents <ids>         comma-separated agents to seat, for example claude,codex,gemini,lmstudio,ollama
   --name <text>          project name shown in the interface
   --brief <text>         starting brief sent to both agents
   --port <number>        local port (default 4783)

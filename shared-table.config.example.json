@@ -11,10 +11,17 @@
   "codexModel": "",
   "customAgents": [
     {
-      "id": "local",
-      "label": "Local model",
-      "command": "ollama",
-      "args": ["run", "llama3.1", "{prompt}"]
+      "id": "reges",
+      "label": "Reges",
+      "baseUrl": "http://127.0.0.1:8080/v1",
+      "model": "",
+      "apiKeyEnv": ""
+    },
+    {
+      "id": "mycli",
+      "label": "My CLI agent",
+      "command": "my-agent",
+      "args": ["--print", "{prompt}"]
     }
   ]
 }

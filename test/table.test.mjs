@@ -8,6 +8,8 @@ import { loadConfig } from '../src/config.mjs';
 import { resolveAgents, agentEnv, policyFor } from '../src/agents.mjs';
 import { parseBoard, visibleText } from '../src/board.mjs';
 import { qrMatrix } from '../src/qr.mjs';
+import { runAgent } from '../src/runner.mjs';
+import http from 'node:http';
 
 // No test makes a model request: agents are replaced by mock runners.
 async function table(t, { runner, argv = [], tunnel } = {}) {
@@ -182,4 +184,36 @@ test('QR codes have the right geometry for short and long pairing links', () => 
     assert.equal(matrix[size - 8][8], true, 'dark module');
   }
   assert.throws(() => qrMatrix('x'.repeat(400)), /too long/);
+});
+
+test('HTTP agents: an OpenAI-compatible server streams an answer, gets the key from the named environment variable, and reports when it is down', async t => {
+  const seen = [];
+  const server = http.createServer(async (req, res) => {
+    if (req.url === '/v1/models') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ data: [{ id: 'local-model' }] })); }
+    let body = ''; for await (const chunk of req) body += chunk;
+    seen.push({ url: req.url, auth: req.headers.authorization, body: JSON.parse(body) });
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    for (const piece of ['Hello ', 'from ', 'a local model']) res.write('data: ' + JSON.stringify({ model: 'local-model', choices: [{ delta: { content: piece } }] }) + '\n\n');
+    res.end('data: [DONE]\n\n');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const baseUrl = 'http://127.0.0.1:' + server.address().port + '/v1';
+  process.env.ST_TEST_KEY = 'test-value';
+  const config = { ...loadConfig({ argv: [], env: {}, cwd: os.tmpdir() }), agents: 'reges', customAgents: [{ id: 'reges', label: 'Reges', baseUrl, apiKeyEnv: 'ST_TEST_KEY' }] };
+  const [agent] = resolveAgents(config, { PATH: '' });
+  assert.deepEqual(await agent.auth(), { ready: true, route: 'local-model' });
+  const updates = [];
+  const result = await runAgent(agent, '{"request":{}}', { mode: 'build', config, policy: 'POLICY', onUpdate: change => updates.push(change.text) });
+  assert.equal(result.status, 'complete');
+  assert.equal(result.text, 'Hello from a local model');
+  assert.equal(updates.length, 3);
+  assert.equal(seen[0].url, '/v1/chat/completions');
+  assert.equal(seen[0].auth, 'Bearer test-value');
+  assert.deepEqual(seen[0].body.messages.map(message => message.role), ['system', 'user']);
+  assert.equal(seen[0].body.model, 'local-model');
+  const [down] = resolveAgents({ ...config, customAgents: [{ id: 'reges', baseUrl: 'http://127.0.0.1:1/v1', model: 'm' }] }, { PATH: '' });
+  assert.equal((await down.auth()).ready, false);
+  assert.equal((await runAgent(down, '{}', { mode: 'advise', config, policy: 'P' })).status, 'error');
+  assert.equal(resolveAgents({ ...config, agents: 'lmstudio,ollama', customAgents: [] }, { PATH: '' }).map(a => a.baseUrl).join(' '), 'http://127.0.0.1:1234/v1 http://127.0.0.1:11434/v1');
 });

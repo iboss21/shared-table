@@ -88,7 +88,7 @@ export async function createTable({ config, runner, authenticate, now = () => Da
   const checkAgent = async agent => {
     if (config.demo) return { ready: true, route: 'Demo: scripted replies' };
     if (authenticate) return authenticate(agent);
-    if (!agent.path) return { ready: false, error: agent.install };
+    if (agent.kind !== 'http' && !agent.path) return { ready: false, error: agent.install };
     return agent.auth(agent.path, env, scratch);
   };
   const updateStatus = async () => {
@@ -207,10 +207,10 @@ export async function createTable({ config, runner, authenticate, now = () => Da
       // One after another: later agents receive what earlier agents wrote in this same turn.
       const earlier = Object.fromEntries(targets.slice(0, targets.indexOf(id)).filter(other => turn.replies[other].status === 'complete').map(other => [other, turn.replies[other].text.slice(0, LIMITS.replyInHistory)]));
       const request = order === 'sequence' && Object.keys(earlier).length ? { ...requests[id], earlierInThisTurn: earlier, note: 'The agents listed in earlierInThisTurn already finished their part of this message. Do your part now, taking their work into account.' } : requests[id];
-      const session = config.sessions === 'native' ? { id: state.sessions[id] || randomUUID(), resume: !!state.sessions[id] } : null;
+      const session = config.sessions === 'native' && agent.kind !== 'http' ? { id: state.sessions[id] || randomUUID(), resume: !!state.sessions[id] } : null;
       let last = 0;
       const result = await run(agent, promptFor(agent, request, before), {
-        mode: config.mode, config, policy: policyFor(agent, agents, config.mode), cwd: workDir, signal: controller.signal, env, session,
+        mode: config.mode, config, policy: policyFor(agent, agents, agent.kind === 'http' ? 'advise' : config.mode), cwd: workDir, signal: controller.signal, env, session,
         onUpdate: change => {
           Object.assign(turn.replies[id], { text: visibleText(change.text), model: change.model, activity: relative(change.activity) });
           if (now() - last >= 90) { last = now(); broadcast({ type: 'reply', turnId: turn.id, agent: id, reply: turn.replies[id] }); }

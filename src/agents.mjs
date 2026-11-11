@@ -199,8 +199,43 @@ const gemini = {
   async auth() { return { ready: true, route: 'Checked on first request' }; },
 };
 
+// ---------------------------------------------------------------- HTTP agents (OpenAI-compatible servers)
+// LM Studio, Ollama, llama.cpp, vLLM, RegesARC and any other server that speaks POST /v1/chat/completions.
+// These agents answer from the shared context only: they have no tools and no file access, whatever the mode.
+export function httpAgent(spec) {
+  const id = String(spec.id || '').toLowerCase();
+  if (!/^[a-z][a-z0-9_-]{1,23}$/.test(id)) throw new Error('Agent id must be 2-24 characters: letters, digits, "-" or "_".');
+  let base;
+  try { base = new URL(spec.baseUrl); } catch { throw new Error('Agent "' + id + '" needs a valid "baseUrl", for example http://127.0.0.1:1234/v1'); }
+  if (!['http:', 'https:'].includes(base.protocol)) throw new Error('Agent "' + id + '": baseUrl must be http or https.');
+  const baseUrl = spec.baseUrl.replace(/\/+$/, '');
+  // The key itself never goes in the config file: name the environment variable that holds it.
+  const headers = () => { const key = spec.apiKeyEnv ? process.env[spec.apiKeyEnv] : ''; return key ? { Authorization: 'Bearer ' + key } : {}; };
+  const models = async () => {
+    const response = await fetch(baseUrl + '/models', { headers: headers(), signal: AbortSignal.timeout(4000) });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const value = await response.json();
+    return (value.data || value.models || []).map(item => item.id || item.name).filter(Boolean);
+  };
+  return {
+    id, label: String(spec.label || id), vendor: String(spec.vendor || base.host), kind: 'http', custom: true, color: spec.color, baseUrl, headers,
+    model: async () => spec.model || (await models())[0] || 'default',
+    find: () => baseUrl,
+    install: 'Start the server at ' + baseUrl,
+    async auth() {
+      try { const list = await models(); return { ready: true, route: spec.model || list[0] || 'reachable' }; }
+      catch (error) { return { ready: false, error: 'Not reachable at ' + baseUrl + ' (' + String(error.cause?.code || error.message).slice(0, 60) + ')' }; }
+    },
+  };
+}
+const HTTP_PRESETS = {
+  lmstudio: { id: 'lmstudio', label: 'LM Studio', vendor: 'LM Studio', baseUrl: 'http://127.0.0.1:1234/v1' },
+  ollama: { id: 'ollama', label: 'Ollama', vendor: 'Ollama', baseUrl: 'http://127.0.0.1:11434/v1' },
+};
+
 /** A custom agent from config: { id, label, command, args: ["--flag", "{prompt}"], stdin: true|false } */
 function customAgent(spec) {
+  if (spec.baseUrl) return httpAgent(spec);
   const id = String(spec.id || '').toLowerCase();
   if (!/^[a-z][a-z0-9_-]{1,23}$/.test(id)) throw new Error('Custom agent id must be 2-24 characters: letters, digits, "-" or "_".');
   if (!spec.command) throw new Error('Custom agent "' + id + '" needs a "command".');
@@ -231,8 +266,8 @@ export function resolveAgents(config, env = process.env) {
   }
   const seen = new Set();
   return ids.filter(id => !seen.has(id) && seen.add(id)).map((id, index) => {
-    const agent = custom.find(a => a.id === id) || BUILT_IN[id];
-    if (!agent) throw new Error('Unknown agent "' + id + '". Built in: claude, codex, gemini. Add others under "customAgents" in shared-table.config.json.');
+    const agent = custom.find(a => a.id === id) || BUILT_IN[id] || (HTTP_PRESETS[id] && httpAgent(HTTP_PRESETS[id]));
+    if (!agent) throw new Error('Unknown agent "' + id + '". Built in: claude, codex, gemini, lmstudio, ollama. Add others under "customAgents" in shared-table.config.json.');
     return { ...agent, color: agent.color || PALETTE[index % PALETTE.length], path: agent.find(config, env) };
   });
 }

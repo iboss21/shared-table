@@ -6,7 +6,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-f2efe7?style=flat-square&labelColor=171815" alt="MIT license"></a>
   <a href="package.json"><img src="https://img.shields.io/badge/node-20%2B-f2efe7?style=flat-square&labelColor=171815" alt="Node 20 or newer"></a>
   <a href="package.json"><img src="https://img.shields.io/badge/dependencies-0-f2efe7?style=flat-square&labelColor=171815" alt="No runtime dependencies"></a>
-  <a href="#agents"><img src="https://img.shields.io/badge/agents-Claude_Code_%C2%B7_Codex_%C2%B7_Gemini_%C2%B7_custom-e0633d?style=flat-square&labelColor=171815" alt="Agents: Claude Code, Codex, Gemini, custom"></a>
+  <a href="#agents"><img src="https://img.shields.io/badge/agents-Claude_Code_%C2%B7_Codex_%C2%B7_Gemini_%C2%B7_local_models-e0633d?style=flat-square&labelColor=171815" alt="Agents: Claude Code, Codex, Gemini, custom"></a>
   <a href="#continue-on-your-phone"><img src="https://img.shields.io/badge/phone-QR_pairing-4f6bed?style=flat-square&labelColor=171815" alt="Phone access by QR code"></a>
   <a href="#what-has-been-tested"><img src="https://img.shields.io/badge/status-0.1_early_release-c98a14?style=flat-square&labelColor=171815" alt="Status: 0.1 early release"></a>
 </p>
@@ -40,6 +40,7 @@ If you use more than one coding agent, you already know the routine: paste the t
 Shared Table is a bridge. You type once. Every agent you addressed starts working, each in its own process and its own session, with its own tools. You watch them side by side, stop them, set one against the other, and keep what matters on a shared board. Nothing is hosted: it runs on your machine and uses the CLIs and sign-ins you already have.
 
 - **One message, many agents.** No mention sends to everyone. `@claude`, `@codex` or `@gemini` addresses one.
+- **Not only CLIs.** Local models in LM Studio or Ollama, and any OpenAI-compatible API server, sit at the same table.
 - **Different jobs in one message.** "`@claude` fix the timeout. `@codex` check Claude's work." Send it **in turn** and Codex starts after Claude finishes, with Claude's result in hand.
 - **Real sessions, not copies.** Each agent keeps its own CLI session per conversation. Copy the resume command from the sidebar and open the same session in Claude Code or Codex.
 - **A shared table.** Agents post decisions, tasks, risks and open questions to a board. You can add, tick off and remove entries. Every agent sees the board with every message.
@@ -142,7 +143,9 @@ In `build` mode every agent works in the same folder. They are told who else is 
 | `claude` | [Claude Code](https://code.claude.com/docs/en/headless) | Tested with real requests in all three modes, including session resume. |
 | `codex` | [Codex CLI](https://learn.chatgpt.com/docs/non-interactive-mode) | Starts, authenticates and reports errors correctly. Model replies NOT TESTED at release. See below. |
 | `gemini` | Gemini CLI | Experimental, NOT TESTED. Seated automatically when `gemini` is on your PATH. |
-| anything else | your command | Add it under `customAgents`. |
+| `lmstudio`, `ollama` | Local models over their OpenAI-compatible API | Protocol tested against a stand-in server. NOT TESTED against the real apps. |
+| any API server | An OpenAI-compatible `/v1/chat/completions` endpoint: llama.cpp, vLLM, RegesARC, a hosted gateway | Same adapter; add it under `customAgents` with a `baseUrl`. |
+| any other CLI | your command | Add it under `customAgents` with a `command`. |
 
 By default the table seats Claude and Codex, plus Gemini when its CLI is installed. Choose explicitly with `--agents claude,codex,gemini`.
 
@@ -160,6 +163,27 @@ Any command that takes a prompt and prints an answer can sit at the table. Put t
 ```
 
 `{prompt}` is replaced with the instructions and the shared context. Leave it out and the prompt is written to the command's standard input instead. Address the agent as `@local`.
+
+### Local models and API servers
+
+Anything that serves the OpenAI chat-completions API can sit at the table next to the CLI agents. LM Studio and Ollama have presets:
+
+```bash
+shared-table --agents claude,codex,lmstudio
+```
+
+For any other server, give it a `baseUrl`:
+
+```json
+{
+  "agents": ["claude", "codex", "reges"],
+  "customAgents": [
+    { "id": "reges", "label": "Reges", "baseUrl": "http://127.0.0.1:8080/v1", "model": "", "apiKeyEnv": "REGES_API_KEY" }
+  ]
+}
+```
+
+Leave `model` empty to use the first model the server lists. If the server needs a key, put the *name* of an environment variable in `apiKeyEnv`; the key itself never goes in the file. API agents answer from the brief, the board and the transcript only: they have no tools and no file access in any mode, and no session of their own.
 
 ## Continue on your phone
 
@@ -212,7 +236,8 @@ Stated plainly, because an agent bridge that overstates itself is worse than non
 | Claude Code 2.1.321, macOS 13 (Intel), Node 22 | **Tested with a real account:** `advise`, `read` (read a project file), `build` (created a file), and session resume (recalled a word from the previous turn). |
 | Codex CLI 0.167.1 | **Partly tested:** discovery, sign-in check, every flag accepted, thread started, provider error shown in the chat. **Model replies, tool events and session resume are NOT TESTED:** the test account had reached its usage limit. |
 | Both agents in one real turn | Tested: Claude answered while Codex returned its usage-limit error in the same turn, and neither blocked the other (screenshot below). |
-| Gemini CLI, custom agents | Argument building is unit-tested. Real runs NOT TESTED. |
+| Gemini CLI, custom CLI agents | Argument building is unit-tested. Real runs NOT TESTED. |
+| API agents (LM Studio, Ollama, other OpenAI-compatible servers) | Streaming, key handling and failure reporting tested against a local stand-in server. NOT TESTED against LM Studio, Ollama or RegesARC themselves. |
 | Phone pairing | Tested in a browser at phone size over the Wi-Fi listener and the phone listener, and the QR code was decoded by Chrome's barcode reader. NOT TESTED on a physical phone. |
 | Tunnels (cloudflared, localhost.run) | NOT TESTED. The pairing and permission logic behind them is covered by tests with a stand-in tunnel. |
 | Windows, Linux | NOT TESTED. |
@@ -225,7 +250,7 @@ Stated plainly, because an agent bridge that overstates itself is worse than non
 <p align="center"><sub>A real run, not demo mode: Claude Code read <code>src/runner.mjs</code> and answered; Codex returned its account's usage limit, shown as-is.</sub></p>
 
 ```bash
-npm test     # 11 tests, mock agents, no model requests
+npm test     # 12 tests, mock agents, no model requests
 ```
 
 ## Limits worth knowing
@@ -241,7 +266,7 @@ npm test     # 11 tests, mock agents, no model requests
 ```
 bin/shared-table.mjs     command-line entry
 src/server.mjs           HTTP server, turns, board, sessions, phone pairing
-src/agents.mjs           agent registry: Claude Code, Codex, Gemini, custom commands
+src/agents.mjs           agent registry: Claude Code, Codex, Gemini, API servers, custom commands
 src/runner.mjs           starts one agent process and streams its output
 src/board.mjs            the shared board format
 src/remote.mjs           Wi-Fi addresses and tunnels

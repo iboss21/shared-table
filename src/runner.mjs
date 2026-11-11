@@ -17,11 +17,48 @@ export function stopOwned(child) {
   }
 }
 
+/** Run an HTTP agent: one streamed POST to an OpenAI-compatible /chat/completions endpoint. */
+async function runHttp(agent, prompt, { config, policy, signal, onUpdate }) {
+  const start = Date.now(), timeoutMs = (config.timeoutSeconds || 180) * 1000;
+  const timeout = AbortSignal.timeout(timeoutMs);
+  let text = '', model = null;
+  const done = (status, error) => ({ status, text: text.trim(), ...(error ? { error } : {}), model, activity: [], durationMs: Date.now() - start });
+  try {
+    model = await agent.model();
+    const response = await fetch(agent.baseUrl + '/chat/completions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...agent.headers() }, signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      body: JSON.stringify({ model, stream: true, messages: [{ role: 'system', content: policy }, { role: 'user', content: 'INPUT (JSON):\n' + prompt }] }),
+    });
+    if (!response.ok) return done('error', safeError('HTTP ' + response.status + ' from ' + agent.baseUrl + ': ' + (await response.text()).slice(0, 300)));
+    const take = value => { const piece = value.choices?.[0]?.delta?.content ?? value.choices?.[0]?.message?.content; if (value.model) model = value.model; if (piece) { text += piece; onUpdate({ text, model, activity: [] }); } };
+    if (!(response.headers.get('content-type') || '').includes('event-stream')) take(await response.json());
+    else {
+      const decoder = new TextDecoder(); let buffer = '';
+      for await (const chunk of response.body) {
+        buffer += decoder.decode(chunk, { stream: true });
+        let position;
+        while ((position = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, position).trim(); buffer = buffer.slice(position + 1);
+          if (!line.startsWith('data:') || line.slice(5).trim() === '[DONE]') continue;
+          try { take(JSON.parse(line.slice(5))); } catch { /* keep-alive or partial line */ }
+        }
+        if (text.length > MAX_REPLY) return done('error', 'The reply exceeded the ' + MAX_REPLY + '-character limit.');
+      }
+    }
+    return text.trim() ? done('complete') : done('error', 'The server returned an empty answer.');
+  } catch (error) {
+    if (signal?.aborted) return done('cancelled');
+    if (timeout.aborted) return done('error', 'The agent reached the ' + Math.round(timeoutMs / 1000) + '-second limit.');
+    return done('error', safeError('Could not reach ' + agent.baseUrl + ': ' + (error.cause?.code || error.message)));
+  }
+}
+
 /**
  * Run one agent once. Resolves with { status: 'complete' | 'error' | 'cancelled', text, error?, model, activity, durationMs }.
  * No shell is involved: the prompt travels on stdin or as a single argument.
  */
 export async function runAgent(agent, prompt, { mode, config, policy, cwd, signal, session = null, onUpdate = () => {}, spawnImpl = spawn, env = agentEnv(process.env, config) } = {}) {
+  if (agent.kind === 'http') return runHttp(agent, prompt, { config, policy, signal, onUpdate });
   if (!agent.path) return { status: 'error', text: '', error: agent.install, activity: [] };
   if (signal?.aborted) return { status: 'cancelled', text: '', activity: [] };
   const timeoutMs = (config.timeoutSeconds || 180) * 1000;
