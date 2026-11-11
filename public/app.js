@@ -654,9 +654,10 @@ function renderSettings() {
 
   nodes.push(section('Companion'));
   const pets = el('div', 'pet-grid'), current = prefs.get('pet');
-  for (const [id, label, image] of [['', 'None', null], ['flick', 'Flick the fox', '/pets/flick-sit.webp'], ['perle', 'Perle the kitten', '/pets/perle-sit.png']]) {
+  for (const [id, label, image] of [['', 'None', null], ['flick', 'Flick the fox', '/pets/flick-sit.webp'], ['perle', 'Perle the kitten', 'sprite']]) {
     const card = el('button', 'pet-card' + (current === id ? ' on' : '')); card.type = 'button';
-    if (image) { const picture = el('img'); picture.src = image; picture.alt = ''; card.append(picture); } else card.append(el('span', 'none', '—'));
+    if (image === 'sprite') card.append(el('span', 'perle-face'));
+    else if (image) { const picture = el('img'); picture.src = image; picture.alt = ''; card.append(picture); } else card.append(el('span', 'none', '—'));
     card.append(label); card.addEventListener('click', () => { prefs.set('pet', id); window.SharedTablePet?.choose(id); renderSettings(); }); pets.append(card);
   }
   nodes.push(pets);

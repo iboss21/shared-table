@@ -318,6 +318,7 @@ kbd { font: 11px var(--mono); opacity: .6; }
 .pet-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .pet-card { border: 1px solid var(--line-2); border-radius: 12px; background: var(--raised); cursor: pointer; padding: 10px 8px 8px; font-size: 12px; font-weight: 600; color: inherit; display: flex; flex-direction: column; align-items: center; gap: 6px; }
 .pet-card img { height: 56px; } .pet-card .none { height: 56px; display: grid; place-items: center; color: var(--muted); font-size: 22px; }
+.pet-card .perle-face { width: 62px; height: 56px; background: url(/pets/perle-behaviors.png) 0 100% / 400% 400% no-repeat; }
 .pet-card.on { box-shadow: 0 0 0 2px var(--accent); border-color: transparent; }
 .settings .swatches { padding: 4px 0; }
 .board-head h2 { font: 600 18px/1.2 var(--serif); letter-spacing: -.01em; }
