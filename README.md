@@ -9,6 +9,7 @@
   <a href="#agents"><img src="https://img.shields.io/badge/agents-Claude_Code_%C2%B7_Codex_%C2%B7_Gemini_%C2%B7_local_models-e0633d?style=flat-square&labelColor=171815" alt="Agents: Claude Code, Codex, Gemini, custom"></a>
   <a href="#continue-on-your-phone"><img src="https://img.shields.io/badge/phone-QR_pairing-4f6bed?style=flat-square&labelColor=171815" alt="Phone access by QR code"></a>
   <a href="#what-has-been-tested"><img src="https://img.shields.io/badge/status-0.1_early_release-c98a14?style=flat-square&labelColor=171815" alt="Status: 0.1 early release"></a>
+  <a href="https://github.com/sponsors/iboss21"><img src="https://img.shields.io/badge/sponsor-GitHub_Sponsors-d31414?style=flat-square&labelColor=171815" alt="Sponsor on GitHub"></a>
 </p>
 
 <p align="center">
@@ -345,6 +346,10 @@ Shared Table began as two small private tools written for one project: a local p
 ## Roadmap
 
 Next up: a full interactive terminal, approvals for Codex, a desktop app with a pet that lives outside the browser window, and saved playbooks. The full plan is in [docs/ROADMAP.md](docs/ROADMAP.md).
+
+## Support the project
+
+Shared Table is free and MIT-licensed, built and maintained by a small team. If it saves you time, you can sponsor its development on [GitHub Sponsors](https://github.com/sponsors/iboss21). Sponsorship pays for the hours that go into new agents, testing on more systems and keeping up with the CLIs as they change.
 
 ## Contributing and security
 
