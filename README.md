@@ -10,6 +10,7 @@
   <a href="#continue-on-your-phone"><img src="https://img.shields.io/badge/phone-QR_pairing-4f6bed?style=flat-square&labelColor=171815" alt="Phone access by QR code"></a>
   <a href="#what-has-been-tested"><img src="https://img.shields.io/badge/status-0.1_early_release-c98a14?style=flat-square&labelColor=171815" alt="Status: 0.1 early release"></a>
   <a href="https://github.com/sponsors/iboss21"><img src="https://img.shields.io/badge/sponsor-GitHub_Sponsors-d31414?style=flat-square&labelColor=171815" alt="Sponsor on GitHub"></a>
+  <a href="https://ko-fi.com/davidio"><img src="https://img.shields.io/badge/buy_me_a_coffee-Ko--fi-d31414?style=flat-square&labelColor=171815" alt="Buy me a coffee on Ko-fi"></a>
 </p>
 
 <p align="center">
@@ -349,7 +350,15 @@ Next up: a full interactive terminal, approvals for Codex, a desktop app with a 
 
 ## Support the project
 
-Shared Table is free and MIT-licensed, built and maintained by a small team. If it saves you time, you can sponsor its development on [GitHub Sponsors](https://github.com/sponsors/iboss21), or make a one-time contribution of any amount through [Stripe](https://donate.stripe.com/eVq6oI6q33Ou79l6QLa3u00). Sponsorship pays for the hours that go into new agents, testing on more systems and keeping up with the CLIs as they change.
+Shared Table is free and MIT-licensed, built and maintained by a small team. If it saves you time, share some love:
+
+- **Star the repo.** It costs nothing and it is how other builders find the project.
+- **Tell someone.** Post it, or send it to the person you know who runs two agents in two windows.
+- **Buy us a coffee** on [Ko-fi](https://ko-fi.com/davidio).
+- **Sponsor development** on [GitHub Sponsors](https://github.com/sponsors/iboss21).
+- **Give any amount, once,** through [Stripe](https://donate.stripe.com/eVq6oI6q33Ou79l6QLa3u00).
+
+Support pays for the hours that go into new agents, testing on more systems and keeping up with the CLIs as they change.
 
 ## Contributing and security
 
@@ -373,5 +382,7 @@ Claude and Claude Code are trademarks of Anthropic. Codex is a trademark of Open
 | Source | [github.com/iboss21/shared-table](https://github.com/iboss21/shared-table) |
 
 If Shared Table saves you a round of copy and paste, a star helps other builders find it.
+
+[Star on GitHub](https://github.com/iboss21/shared-table) · [Buy us a coffee](https://ko-fi.com/davidio) · [Sponsor](https://github.com/sponsors/iboss21)
 
 </div>
