@@ -45,8 +45,9 @@ export function startTunnel(port, { env = process.env, spawnImpl = spawn, timeou
     const stop = () => { if (child.exitCode === null) child.kill('SIGTERM'); };
     const timer = setTimeout(() => { if (!settled) { settled = true; stop(); reject(new Error('The tunnel did not report an address within ' + timeoutMs / 1000 + ' seconds.')); } }, timeoutMs);
     const read = chunk => {
+      // Look before trimming: localhost.run prints the address and then a large QR code in the same burst.
+      const url = find(output + chunk);
       output = (output + chunk).slice(-8000);
-      const url = find(output);
       if (url && !settled) { settled = true; clearTimeout(timer); resolve({ url, provider: provider.label, stop }); }
     };
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');

@@ -298,7 +298,7 @@ Stated plainly, because an agent bridge that overstates itself is worse than non
 | Approvals, Changes, Commands, Preview | **Tested with real Claude Code** in build mode: it asked before a shell command, ran it after Allow, and the new files showed in Changes with their diff; a command ran in the Commands tab; a localhost page showed in Preview. Worktree apply/discard is covered by automated tests, NOT TESTED with a real agent. |
 | Attachments | **Tested with real Claude Code:** it described an attached image and quoted an attached text file. Codex `--image` and API vision input are NOT TESTED. |
 | Phone pairing | Tested in a browser at phone size over the Wi-Fi listener and the phone listener, and the QR code was decoded by Chrome's barcode reader. NOT TESTED on a physical phone. |
-| Tunnels (cloudflared, localhost.run) | NOT TESTED. The pairing and permission logic behind them is covered by tests with a stand-in tunnel. |
+| Tunnels | **localhost.run tested for real** with the demo server: over the public HTTPS address an unpaired visitor got 401, pairing with a one-time code worked, the live stream arrived, and a message sent through the tunnel ran. cloudflared is NOT TESTED; per Cloudflare's docs its quick tunnels do not carry live event streams, so the page falls back to polling there. |
 | Windows, Linux | NOT TESTED. |
 | Claude or Codex desktop apps listing a session started here | Unverified. Opening the session with the copied CLI resume command is the supported path. |
 
@@ -349,7 +349,7 @@ Next up: a full interactive terminal, approvals for Codex, a desktop app with a 
 
 ## Support the project
 
-Shared Table is free and MIT-licensed, built and maintained by a small team. If it saves you time, you can sponsor its development on [GitHub Sponsors](https://github.com/sponsors/iboss21). Sponsorship pays for the hours that go into new agents, testing on more systems and keeping up with the CLIs as they change.
+Shared Table is free and MIT-licensed, built and maintained by a small team. If it saves you time, you can sponsor its development on [GitHub Sponsors](https://github.com/sponsors/iboss21), or make a one-time contribution of any amount through [Stripe](https://donate.stripe.com/eVq6oI6q33Ou79l6QLa3u00). Sponsorship pays for the hours that go into new agents, testing on more systems and keeping up with the CLIs as they change.
 
 ## Contributing and security
 
