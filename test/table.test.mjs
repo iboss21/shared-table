@@ -177,6 +177,13 @@ test('agent commands: no shell, sealed in advise mode, own session and full harn
   const env = agentEnv({ OPENAI_API_KEY: 'x', ANTHROPIC_API_KEY: 'x', CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'x', PATH: '/bin' });
   assert.deepEqual(Object.keys(env).sort(), ['CLAUDE_CODE_DISABLE_BACKGROUND_TASKS', 'NO_COLOR', 'PATH']);
   assert.equal(agentEnv({ OPENAI_API_KEY: 'x' }, { allowApiKeys: true }).OPENAI_API_KEY, 'x');
+  const gemini = agents[2], geminiMade = gemini.args({ mode: 'build', config, policy: 'POLICY', prompt: '{"x":1}', session: { id: 'g-1', resume: true } });
+  assert.deepEqual(geminiMade.args.slice(0, 5), ['-o', 'stream-json', '--skip-trust', '--approval-mode', 'auto_edit']);
+  assert.ok(geminiMade.args.includes('-r') && geminiMade.stdin && geminiMade.stdinText.startsWith('POLICY'));
+  assert.equal(gemini.args({ mode: 'read', config, policy: 'P', prompt: '{}' }).args[4], 'default');
+  const geminiState = { text: '', activity: [] };
+  for (const event of [{ type: 'init', session_id: 's1', model: 'gemini-pro' }, { type: 'message', role: 'user', content: 'ignored' }, { type: 'message', role: 'assistant', content: 'Hel', delta: true }, { type: 'message', role: 'assistant', content: 'lo', delta: true }, { type: 'tool_use', tool_name: 'read_file', tool_id: 't', parameters: { file_path: 'a.js' } }, { type: 'result', status: 'success', stats: { input_tokens: 9, output_tokens: 2 } }]) gemini.parse(event, geminiState, 'read');
+  assert.deepEqual([geminiState.text, geminiState.sessionId, geminiState.activity[0].tool, geminiState.usage.output], ['Hello', 's1', 'read_file', 2]);
   assert.throws(() => resolveAgents({ ...config, agents: 'nope' }, { PATH: '' }), /Unknown agent/);
   const custom = resolveAgents({ ...config, agents: 'local', customAgents: [{ id: 'local', label: 'Local', command: 'ollama', args: ['run', 'llama3', '{prompt}'] }] }, { PATH: '' })[0];
   const customMade = custom.args({ policy: 'P', prompt: '{}' });
@@ -345,4 +352,54 @@ test('changes, worktrees, command panel, settings and project switching', async 
   assert.equal((await post('/api/project', { folder: project })).status, 200);
   assert.equal((await state()).conversation.id, before, 'switching back restores that project\'s conversation');
   void instance;
+});
+
+test('model gateway: add a Claude API agent and a local model from Settings; keys are saved but never sent back', async t => {
+  const seen = [];
+  const provider = http.createServer(async (req, res) => {
+    let body = ''; for await (const chunk of req) body += chunk;
+    seen.push({ url: req.url, key: req.headers['x-api-key'], version: req.headers['anthropic-version'], auth: req.headers.authorization, body: body ? JSON.parse(body) : null });
+    if (req.url.startsWith('/v1/models')) { res.writeHead(req.headers['x-api-key'] === 'test-claude-key' || req.headers.authorization ? 200 : 401, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ data: [{ id: 'claude-opus-5-5' }, { id: 'claude-haiku-5-5' }] })); }
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    if (req.url === '/v1/messages') {
+      const refuse = JSON.stringify(JSON.parse(body).messages).includes('REFUSE');
+      for (const event of [{ type: 'message_start', message: { usage: { input_tokens: 21 } } }, ...(refuse ? [] : [{ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Bonjour ' } }, { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'from the API' } }]), { type: 'message_delta', delta: { stop_reason: refuse ? 'refusal' : 'end_turn' }, usage: { output_tokens: 5 } }, { type: 'message_stop' }]) res.write('event: ' + event.type + '\ndata: ' + JSON.stringify(event) + '\n\n');
+      return res.end();
+    }
+    res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: 'local says hi' } }] }) + '\n\n'); res.end('data: [DONE]\n\n');
+  });
+  await new Promise(resolve => provider.listen(0, '127.0.0.1', resolve));
+  t.after(() => provider.close());
+  const base = 'http://127.0.0.1:' + provider.address().port + '/v1';
+  // CLI agents stay mocked; gateway agents go through the real HTTP runner against the stand-in server.
+  const { post, state, settle, config } = await table(t, { runner: (agent, prompt, options) => (agent.kind === 'http' ? runAgent(agent, prompt, options) : Promise.resolve({ status: 'complete', text: 'cli' })) });
+
+  assert.equal((await post('/api/gateway/models', { provider: 'anthropic', baseUrl: base })).status, 400, 'no key yet');
+  assert.equal((await post('/api/gateway/key', { provider: 'anthropic', key: 'test-claude-key' })).status, 200);
+  assert.deepEqual((await (await post('/api/gateway/models', { provider: 'anthropic', baseUrl: base })).json()).models, ['claude-haiku-5-5', 'claude-opus-5-5']);
+  assert.equal((await post('/api/gateway/agent', { op: 'add', provider: 'anthropic', model: 'claude-opus-5-5', baseUrl: base })).status, 200);
+  assert.equal((await post('/api/gateway/agent', { op: 'add', provider: 'custom', model: 'llama3', baseUrl: base, label: 'Local Llama' })).status, 200);
+  assert.equal((await post('/api/gateway/agent', { op: 'add', provider: 'custom', model: 'x', baseUrl: 'ftp://nope' })).status, 400);
+
+  const view = await state();
+  assert.deepEqual(view.agents.map(agent => agent.id), ['claude', 'codex', 'opus-5-5', 'llama3']);
+  assert.equal(JSON.stringify(view).includes('test-claude-key'), false, 'the key is never sent to the browser');
+  assert.equal(view.gateway.providers.find(item => item.id === 'anthropic').keySource, 'saved');
+  assert.equal((await fs.stat(path.join(config.dataRoot, 'keys.json'))).mode & 0o077, 0, 'key file is readable by the owner only');
+
+  await post('/api/message', { clientId: id(), message: '@opus-5-5 and @llama3 say hello' });
+  let turn = (await settle()).conversation.turns[0];
+  assert.deepEqual(turn.targets, ['opus-5-5', 'llama3']);
+  assert.equal(turn.replies['opus-5-5'].text, 'Bonjour from the API');
+  assert.deepEqual(turn.replies['opus-5-5'].usage, { input: 21, output: 5 });
+  assert.equal(turn.replies.llama3.text, 'local says hi');
+  const call = seen.find(item => item.url === '/v1/messages');
+  assert.deepEqual([call.key, call.version, call.body.stream, typeof call.body.system, call.body.max_tokens, call.body.temperature], ['test-claude-key', '2026-10-21', true, 'string', 64000, undefined]);
+
+  await post('/api/message', { clientId: id(), message: '@opus-5-5 REFUSE' });
+  turn = (await settle()).conversation.turns[1];
+  assert.deepEqual([turn.replies['opus-5-5'].status, turn.replies['opus-5-5'].error], ['error', 'Claude declined this request.']);
+
+  assert.equal((await post('/api/gateway/agent', { op: 'remove', id: 'llama3' })).status, 200);
+  assert.deepEqual((await state()).agents.map(agent => agent.id), ['claude', 'codex', 'opus-5-5']);
 });

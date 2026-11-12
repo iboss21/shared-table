@@ -41,7 +41,7 @@ If you use more than one coding agent, you already know the routine: paste the t
 Shared Table is a bridge. You type once. Every agent you addressed starts working, each in its own process and its own session, with its own tools. You watch them side by side, stop them, set one against the other, and keep what matters on a shared board. Nothing is hosted: it runs on your machine and uses the CLIs and sign-ins you already have.
 
 - **One message, many agents.** No mention sends to everyone. `@claude`, `@codex` or `@gemini` addresses one.
-- **Not only CLIs.** Local models in LM Studio or Ollama, and any OpenAI-compatible API server, sit at the same table.
+- **Any provider, your own accounts.** Use your own Claude and Codex sign-ins, and add any other model through the built-in gateway: Claude API, OpenAI, Gemini, OpenRouter, Groq, xAI, Mistral, DeepSeek, or a local model in LM Studio or Ollama.
 - **Different jobs in one message.** "`@claude` fix the timeout. `@codex` check Claude's work." Send it **in turn** and Codex starts after Claude finishes, with Claude's result in hand.
 - **Real sessions, not copies.** Each agent keeps its own CLI session per conversation. Copy the resume command from the sidebar and open the same session in Claude Code or Codex.
 - **A shared table.** Agents post decisions, tasks, risks and open questions to a board. You can add, tick off and remove entries. Every agent sees the board with every message.
@@ -61,7 +61,7 @@ Shared Table is a bridge. You type once. Every agent you addressed starts workin
   <a href="docs/assets/shared-table-demo.mp4"><img src="docs/assets/video-poster.png" alt="Shared Table demo video" width="100%"></a>
 </p>
 
-<p align="center"><sub>Click to play the 41-second walkthrough (<a href="docs/assets/shared-table-demo.mp4">docs/assets/shared-table-demo.mp4</a>). Recorded in demo mode: the agent replies in the video are scripted.</sub></p>
+<p align="center"><sub>Click to play the one-minute narrated walkthrough (<a href="docs/assets/shared-table-demo.mp4">docs/assets/shared-table-demo.mp4</a>). Recorded in demo mode: the agent replies in the video are scripted. The narration is a synthetic voice.</sub></p>
 
 ## Quick start
 
@@ -184,9 +184,8 @@ Links are sent as text. In `advise` mode agents have no web access, so they see 
 |---|---|---|
 | `claude` | [Claude Code](https://code.claude.com/docs/en/headless) | Tested with real requests in all three modes, including session resume. |
 | `codex` | [Codex CLI](https://learn.chatgpt.com/docs/non-interactive-mode) | Starts, authenticates and reports errors correctly. Model replies NOT TESTED at release. See below. |
-| `gemini` | Gemini CLI | Experimental, NOT TESTED. Seated automatically when `gemini` is on your PATH. |
-| `lmstudio`, `ollama` | Local models over their OpenAI-compatible API | Protocol tested against a stand-in server. NOT TESTED against the real apps. |
-| any API server | An OpenAI-compatible `/v1/chat/completions` endpoint: llama.cpp, vLLM, RegesARC, a hosted gateway | Same adapter; add it under `customAgents` with a `baseUrl`. |
+| `gemini` | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Experimental. Written against its headless-mode documentation (streamed JSON events, session resume); NOT TESTED with a real run. Seated automatically when `gemini` is on your PATH. |
+| any model with an API | Claude API, OpenAI, Gemini, OpenRouter, Groq, xAI, Mistral, DeepSeek, LM Studio, Ollama, llama.cpp, RegesARC, or any OpenAI-compatible server | Added from Settings → Model gateway. Both wire protocols are tested against stand-in servers; NOT TESTED against the real providers. |
 | any other CLI | your command | Add it under `customAgents` with a `command`. |
 
 By default the table seats Claude and Codex, plus Gemini when its CLI is installed. Choose explicitly with `--agents claude,codex,gemini`.
@@ -206,26 +205,29 @@ Any command that takes a prompt and prints an answer can sit at the table. Put t
 
 `{prompt}` is replaced with the instructions and the shared context. Leave it out and the prompt is written to the command's standard input instead. Address the agent as `@local`.
 
-### Local models and API servers
+### Model gateway: any provider, your own keys
 
-Anything that serves the OpenAI chat-completions API can sit at the table next to the CLI agents. LM Studio and Ollama have presets:
+Not every model has a coding CLI. The gateway seats any model at the table through its API, next to the CLI agents. Open **Settings → Model gateway**, pick a provider, paste your own key (or leave it empty for a model running on your computer), load the model list and add it. It gets an `@name` like every other agent.
 
-```bash
-shared-table --agents claude,codex,lmstudio
-```
+| Provider | Address used | Key |
+|---|---|---|
+| Claude API | `https://api.anthropic.com/v1` (Messages API) | `ANTHROPIC_API_KEY` or pasted |
+| OpenAI API | `https://api.openai.com/v1` | `OPENAI_API_KEY` or pasted |
+| Google Gemini API | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` or pasted |
+| OpenRouter | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` or pasted |
+| Groq | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` or pasted |
+| xAI | `https://api.x.ai/v1` | `XAI_API_KEY` or pasted |
+| Mistral | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` or pasted |
+| DeepSeek | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` or pasted |
+| LM Studio | `http://127.0.0.1:1234/v1` | none |
+| Ollama | `http://127.0.0.1:11434/v1` | none |
+| llama.cpp server | `http://127.0.0.1:9931/v1` (older builds: 8080) | none |
+| RegesARC | `http://127.0.0.1:8080/v1` | none |
+| Anything else that speaks the OpenAI chat-completions API | you type it | optional |
 
-For any other server, give it a `baseUrl`:
-
-```json
-{
-  "agents": ["claude", "codex", "reges"],
-  "customAgents": [
-    { "id": "reges", "label": "Reges", "baseUrl": "http://127.0.0.1:8080/v1", "model": "", "apiKeyEnv": "REGES_API_KEY" }
-  ]
-}
-```
-
-Leave `model` empty to use the first model the server lists. If the server needs a key, put the *name* of an environment variable in `apiKeyEnv`; the key itself never goes in the file. API agents answer from the brief, the board and the transcript only: they have no tools and no file access in any mode, and no session of their own.
+- **Your keys stay yours.** A pasted key is written to `~/.shared-table/keys.json`, readable only by your user, and is never sent back to the browser or anywhere except that provider. An environment variable works too and is never written to disk.
+- **Gateway agents talk; they do not touch files.** They receive the brief, the board, the transcript and your attachments (images included, for models that accept them). Reading and editing the project is what the CLI agents are for.
+- **The same thing in a config file:** add an entry with a `baseUrl` under `customAgents` in `shared-table.config.json` and name its key variable in `apiKeyEnv`. `--agents claude,codex,lmstudio` seats a local model from the command line.
 
 ## Continue on your phone
 
@@ -242,7 +244,7 @@ Choose **Phone** in the sidebar, switch on a connection, scan the code. The phon
 | Connection | How | Notes |
 |---|---|---|
 | **Same Wi-Fi** | The server also listens on this computer's network address. | Plain HTTP on your local network. |
-| **Anywhere** | A private HTTPS tunnel: [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) if installed, otherwise an `ssh` tunnel through localhost.run. Free, no account. | Works on mobile data. The tunnel provider carries your traffic. |
+| **Anywhere** | A private HTTPS tunnel: [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) if installed, otherwise an `ssh` tunnel through localhost.run. Free, no account. | Works on mobile data. The tunnel provider carries your traffic. Cloudflare quick tunnels do not carry live event streams, so over one the page refreshes every second and a half instead of streaming. |
 | **Your own address** | `--public-url https://…` and forward it to the printed phone port. | For Tailscale, your own reverse proxy and similar. |
 
 Only a device that scans a code can connect. A code works once and expires after ten minutes. A paired phone can chat, stop a run and edit the board; it cannot change phone access or delete conversations. Remove a device in the same dialog to cut it off. On the phone, "Add to Home Screen" gives you a full-screen app icon.
@@ -290,8 +292,8 @@ Stated plainly, because an agent bridge that overstates itself is worse than non
 | Claude Code 2.1.321, macOS 13 (Intel), Node 22 | **Tested with a real account:** `advise`, `read` (read a project file), `build` (created a file), and session resume (recalled a word from the previous turn). |
 | Codex CLI 0.167.1 | **Partly tested:** discovery, sign-in check, every flag accepted, thread started, provider error shown in the chat. **Model replies, tool events and session resume are NOT TESTED:** the test account had reached its usage limit. |
 | Both agents in one real turn | Tested: Claude answered while Codex returned its usage-limit error in the same turn, and neither blocked the other (screenshot below). |
-| Gemini CLI, custom CLI agents | Argument building is unit-tested. Real runs NOT TESTED. |
-| API agents (LM Studio, Ollama, other OpenAI-compatible servers) | Streaming, key handling and failure reporting tested against a local stand-in server. NOT TESTED against LM Studio, Ollama or RegesARC themselves. |
+| Gemini CLI, custom CLI agents | Command building and Gemini event parsing are unit-tested against the documented formats. Real runs NOT TESTED. |
+| Model gateway | Adding agents, key storage, model listing, streaming, refusals and failures are tested against stand-in servers for both the Claude Messages API and the OpenAI chat-completions shape. NOT TESTED against any real provider, LM Studio, Ollama or RegesARC. |
 | Approvals, Changes, Commands, Preview | **Tested with real Claude Code** in build mode: it asked before a shell command, ran it after Allow, and the new files showed in Changes with their diff; a command ran in the Commands tab; a localhost page showed in Preview. Worktree apply/discard is covered by automated tests, NOT TESTED with a real agent. |
 | Attachments | **Tested with real Claude Code:** it described an attached image and quoted an attached text file. Codex `--image` and API vision input are NOT TESTED. |
 | Phone pairing | Tested in a browser at phone size over the Wi-Fi listener and the phone listener, and the QR code was decoded by Chrome's barcode reader. NOT TESTED on a physical phone. |
@@ -306,7 +308,7 @@ Stated plainly, because an agent bridge that overstates itself is worse than non
 <p align="center"><sub>A real run, not demo mode: Claude Code read <code>src/runner.mjs</code> and answered; Codex returned its account's usage limit, shown as-is.</sub></p>
 
 ```bash
-npm test     # 16 tests, mock agents, no model requests
+npm test     # 17 tests, mock agents, no model requests
 ```
 
 ## Limits worth knowing
@@ -323,7 +325,8 @@ npm test     # 16 tests, mock agents, no model requests
 ```
 bin/shared-table.mjs     command-line entry
 src/server.mjs           HTTP server, turns, board, sessions, phone pairing
-src/agents.mjs           agent registry: Claude Code, Codex, Gemini, API servers, custom commands
+src/agents.mjs           agent registry: Claude Code, Codex, Gemini CLI, custom commands
+src/gateway.mjs          model gateway: providers, keys, model lists
 src/runner.mjs           starts one agent process and streams its output
 src/board.mjs            the shared board format
 src/workspace.mjs        git changes, per-agent worktrees, the command runner

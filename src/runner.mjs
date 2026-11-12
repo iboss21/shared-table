@@ -18,6 +18,46 @@ export function stopOwned(child) {
   }
 }
 
+/** Read a Server-Sent Events body and hand each JSON `data:` payload to `onEvent`. */
+async function readEvents(response, onEvent) {
+  const decoder = new TextDecoder(); let buffer = '';
+  for await (const chunk of response.body) {
+    buffer += decoder.decode(chunk, { stream: true });
+    let position;
+    while ((position = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, position).trim(); buffer = buffer.slice(position + 1);
+      if (!line.startsWith('data:') || line.slice(5).trim() === '[DONE]') continue;
+      let value; try { value = JSON.parse(line.slice(5)); } catch { continue; }
+      if (onEvent(value) === false) return;
+    }
+  }
+}
+
+/** The Claude Messages API, streamed. Thinking is left to the model's default; sampling parameters are not sent. */
+async function runClaudeApi(agent, prompt, { policy, signal, onUpdate, attachments, model, done, text: setText }) {
+  const content = [];
+  for (const item of attachments.filter(entry => entry.image)) content.push({ type: 'image', source: { type: 'base64', media_type: item.type, data: (await readFile(item.path)).toString('base64') } });
+  content.push({ type: 'text', text: 'INPUT (JSON):\n' + prompt });
+  const response = await fetch(agent.baseUrl + '/messages', {
+    method: 'POST', signal, headers: { 'Content-Type': 'application/json', ...agent.headers() },
+    body: JSON.stringify({ model, max_tokens: 64000, stream: true, system: policy, messages: [{ role: 'user', content }] }),
+  });
+  if (!response.ok) { let detail = ''; try { detail = (await response.json()).error?.message || ''; } catch { /* not JSON */ } return done('error', safeError('Claude API, HTTP ' + response.status + (detail ? ': ' + detail : ''))); }
+  let text = '', stop = null, failure = null; const usage = { input: 0, output: 0 };
+  await readEvents(response, event => {
+    if (event.type === 'message_start') usage.input = (event.message?.usage?.input_tokens || 0) + (event.message?.usage?.cache_read_input_tokens || 0) + (event.message?.usage?.cache_creation_input_tokens || 0);
+    if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') { text += event.delta.text; setText(text); onUpdate({ text, model, activity: [] }); if (text.length > MAX_REPLY) { failure = 'The reply exceeded the ' + MAX_REPLY + '-character limit.'; return false; } }
+    if (event.type === 'message_delta') { stop = event.delta?.stop_reason || stop; usage.output = event.usage?.output_tokens || usage.output; }
+    if (event.type === 'error') { failure = safeError(event.error?.message || 'The Claude API reported an error.'); return false; }
+    return true;
+  });
+  if (failure) return done('error', failure, { usage });
+  // Always look at the stop reason before trusting the text: a refusal arrives as HTTP 200.
+  if (stop === 'refusal') return done('error', 'Claude declined this request.', { usage });
+  if (!text.trim()) return done('error', 'The Claude API returned an empty answer.', { usage });
+  return done('complete', undefined, { usage, ...(stop === 'max_tokens' ? { text: text.trim() + '\n\n(The answer was cut off at the output limit.)' } : {}) });
+}
+
 /** Run an HTTP agent: one streamed POST to an OpenAI-compatible /chat/completions endpoint. */
 async function runHttp(agent, prompt, { config, policy, signal, onUpdate, attachments = [] }) {
   const start = Date.now(), timeoutMs = (config.timeoutSeconds || 180) * 1000;
@@ -26,6 +66,7 @@ async function runHttp(agent, prompt, { config, policy, signal, onUpdate, attach
   const done = (status, error) => ({ status, text: text.trim(), ...(error ? { error } : {}), model, activity: [], durationMs: Date.now() - start });
   try {
     model = await agent.model();
+    if (agent.protocol === 'anthropic') return await runClaudeApi(agent, prompt, { policy, signal: signal ? AbortSignal.any([signal, timeout]) : timeout, onUpdate, attachments, model, done: (status, error, extra) => ({ ...done(status, error), ...extra }), text: value => { text = value; } });
     // Images are sent in the OpenAI vision format; the model behind the server must support images.
     const images = [];
     for (const item of attachments.filter(entry => entry.image)) images.push({ type: 'image_url', image_url: { url: 'data:' + item.type + ';base64,' + (await readFile(item.path)).toString('base64') } });
@@ -34,7 +75,8 @@ async function runHttp(agent, prompt, { config, policy, signal, onUpdate, attach
       body: JSON.stringify({ model, stream: true, messages: [{ role: 'system', content: policy }, { role: 'user', content: images.length ? [{ type: 'text', text: 'INPUT (JSON):\n' + prompt }, ...images] : 'INPUT (JSON):\n' + prompt }] }),
     });
     if (!response.ok) return done('error', safeError('HTTP ' + response.status + ' from ' + agent.baseUrl + ': ' + (await response.text()).slice(0, 300)));
-    const take = value => { const piece = value.choices?.[0]?.delta?.content ?? value.choices?.[0]?.message?.content; if (value.model) model = value.model; if (piece) { text += piece; onUpdate({ text, model, activity: [] }); } };
+    let streamError = null;
+    const take = value => { if (value.error) streamError = safeError(value.error.message || 'The provider reported an error.'); const piece = value.choices?.[0]?.delta?.content ?? value.choices?.[0]?.message?.content; if (value.model) model = value.model; if (piece) { text += piece; onUpdate({ text, model, activity: [] }); } };
     if (!(response.headers.get('content-type') || '').includes('event-stream')) take(await response.json());
     else {
       const decoder = new TextDecoder(); let buffer = '';
@@ -49,6 +91,7 @@ async function runHttp(agent, prompt, { config, policy, signal, onUpdate, attach
         if (text.length > MAX_REPLY) return done('error', 'The reply exceeded the ' + MAX_REPLY + '-character limit.');
       }
     }
+    if (streamError) return done('error', streamError);
     return text.trim() ? done('complete') : done('error', 'The server returned an empty answer.');
   } catch (error) {
     if (signal?.aborted) return done('cancelled');

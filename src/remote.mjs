@@ -30,8 +30,14 @@ export function startTunnel(port, { env = process.env, spawnImpl = spawn, timeou
   if (!provider) return Promise.reject(new Error('No tunnel tool found. Install cloudflared, or use --public-url with your own address.'));
   const args = provider.id === 'cloudflared'
     ? ['tunnel', '--no-autoupdate', '--url', 'http://127.0.0.1:' + port]
-    : ['-T', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ServerAliveInterval=30', '-o', 'ExitOnForwardFailure=yes', '-R', '80:127.0.0.1:' + port, 'nokey@localhost.run'];
-  const pattern = provider.id === 'cloudflared' ? /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i : /https:\/\/[a-z0-9-]+\.(?:lhr\.life|localhost\.run)/i;
+    : ['-T', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ServerAliveInterval=60', '-o', 'ExitOnForwardFailure=yes', '-R', '80:127.0.0.1:' + port, 'nokey@localhost.run'];
+  // cloudflared prints a trycloudflare.com address. localhost.run's docs do not promise a domain, so take the first
+  // https address it prints that is not one of its own pages.
+  const find = output => {
+    if (provider.id === 'cloudflared') return /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i.exec(output)?.[0] || null;
+    for (const match of output.matchAll(/https:\/\/([a-z0-9-]+(?:\.[a-z0-9-]+)+)/gi)) if (!/^(www\.|admin\.)?localhost\.run$|twitter\.com$|x\.com$/i.test(match[1])) return match[0];
+    return null;
+  };
 
   return new Promise((resolve, reject) => {
     const child = spawnImpl(provider.command, args, { env, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -40,8 +46,8 @@ export function startTunnel(port, { env = process.env, spawnImpl = spawn, timeou
     const timer = setTimeout(() => { if (!settled) { settled = true; stop(); reject(new Error('The tunnel did not report an address within ' + timeoutMs / 1000 + ' seconds.')); } }, timeoutMs);
     const read = chunk => {
       output = (output + chunk).slice(-8000);
-      const match = pattern.exec(output);
-      if (match && !settled) { settled = true; clearTimeout(timer); resolve({ url: match[0], provider: provider.label, stop }); }
+      const url = find(output);
+      if (url && !settled) { settled = true; clearTimeout(timer); resolve({ url, provider: provider.label, stop }); }
     };
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     child.stdout.on('data', read); child.stderr.on('data', read);

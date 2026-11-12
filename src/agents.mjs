@@ -201,19 +201,38 @@ const codex = {
   },
 };
 
-// ---------------------------------------------------------------- Gemini CLI (plain-text adapter)
+// ---------------------------------------------------------------- Gemini CLI
+// Headless mode per the Gemini CLI docs: `-p` forces non-interactive mode and is appended to stdin; `-o stream-json`
+// emits one JSON event per line (init, message, tool_use, tool_result, error, result). In non-interactive mode a tool
+// that would ask for confirmation is denied, so "default" approval is read-only in practice and "auto_edit" allows edits.
 const gemini = {
-  id: 'gemini', label: 'Gemini', vendor: 'Gemini CLI', format: 'text', experimental: true,
-  find: (config, env) => findExecutable('gemini', { configured: config.geminiPath, env }),
+  id: 'gemini', label: 'Gemini', vendor: 'Gemini CLI', format: 'jsonl', experimental: true,
+  resumeCommand: (id, folder) => 'cd ' + JSON.stringify(folder) + ' && gemini -r ' + id,
+  find: (config, env) => findExecutable('gemini', { configured: config.geminiPath, env, extra: [path.join(env.HOME || os.homedir(), '.local', 'bin', 'gemini'), '/usr/local/bin/gemini', '/opt/homebrew/bin/gemini'] }),
   install: 'Install the Gemini CLI (npm install -g @google/gemini-cli) and sign in by running: gemini',
-  args({ mode, config, policy, prompt }) {
-    const args = [];
+  args({ mode, config, policy, prompt, session }) {
+    const args = ['-o', 'stream-json', '--skip-trust', '--approval-mode', mode === 'build' ? 'auto_edit' : 'default'];
     if (config.geminiModel) args.push('-m', config.geminiModel);
-    if (mode === 'build') args.push('--approval-mode', 'auto_edit');
-    args.push('-p', policy + '\n\nINPUT (JSON):\n' + prompt);
-    return { args, stdin: false };
+    if (session?.resume) args.push('-r', session.id);
+    args.push('-p', 'Follow the instructions and answer the request in the JSON given on standard input.');
+    return { args, stdin: true, stdinText: policy + '\n\nINPUT (JSON):\n' + prompt };
   },
-  async auth() { return { ready: true, route: 'Checked on first request' }; },
+  // The CLI has no command that reports sign-in state; a missing sign-in shows up as an error on the first request.
+  async auth() { return { ready: true, route: 'Sign-in is checked on the first request' }; },
+  parse(event, state, mode) {
+    if (event.type === 'init') { state.sessionId = event.session_id; state.model = event.model; }
+    if (event.type === 'message' && event.role === 'assistant' && typeof event.content === 'string') { state.text = event.delta ? state.text + event.content : event.content; state.changed = true; }
+    if (event.type === 'tool_use') {
+      if (mode === 'advise') throw new Error('Stopped: Gemini attempted a tool action in advise mode.');
+      const input = event.parameters || {};
+      state.activity.push({ tool: event.tool_name, detail: short(input.file_path || input.path || input.pattern || input.command || input.query || '') }); state.changed = true;
+    }
+    if (event.type === 'error' && event.severity === 'error') state.error = safeError(event.message);
+    if (event.type === 'result') {
+      if (event.status === 'error') state.error = safeError(event.error?.message || 'Gemini reported an error.');
+      if (event.stats) state.usage = { input: event.stats.input_tokens || 0, output: event.stats.output_tokens || 0 };
+    }
+  },
 };
 
 // ---------------------------------------------------------------- HTTP agents (OpenAI-compatible servers)
@@ -226,20 +245,23 @@ export function httpAgent(spec) {
   try { base = new URL(spec.baseUrl); } catch { throw new Error('Agent "' + id + '" needs a valid "baseUrl", for example http://127.0.0.1:1234/v1'); }
   if (!['http:', 'https:'].includes(base.protocol)) throw new Error('Agent "' + id + '": baseUrl must be http or https.');
   const baseUrl = spec.baseUrl.replace(/\/+$/, '');
-  // The key itself never goes in the config file: name the environment variable that holds it.
-  const headers = () => { const key = spec.apiKeyEnv ? process.env[spec.apiKeyEnv] : ''; return key ? { Authorization: 'Bearer ' + key } : {}; };
+  // The key itself never goes in the config file: name the environment variable that holds it. Gateway agents get theirs from the gateway.
+  const protocol = spec.protocol === 'anthropic' ? 'anthropic' : 'openai';
+  const key = () => (typeof spec.key === 'function' ? spec.key() : spec.apiKeyEnv ? process.env[spec.apiKeyEnv] : '') || '';
+  const headers = () => (protocol === 'anthropic' ? { ...(key() ? { 'x-api-key': key() } : {}), 'anthropic-version': '2026-10-21' } : { ...(key() ? { Authorization: 'Bearer ' + key() } : {}), ...(spec.extraHeaders || {}) });
   const models = async () => {
-    const response = await fetch(baseUrl + '/models', { headers: headers(), signal: AbortSignal.timeout(4000) });
+    const response = await fetch(baseUrl + '/models', { headers: headers(), signal: AbortSignal.timeout(6000) });
     if (!response.ok) throw new Error('HTTP ' + response.status);
     const value = await response.json();
     return (value.data || value.models || []).map(item => item.id || item.name).filter(Boolean);
   };
   return {
-    id, label: String(spec.label || id), vendor: String(spec.vendor || base.host), kind: 'http', custom: true, color: spec.color, baseUrl, headers,
+    id, label: String(spec.label || id), vendor: String(spec.vendor || base.host), kind: 'http', custom: true, color: spec.color, baseUrl, headers, protocol, gateway: !!spec.gateway,
     model: async () => spec.model || (await models())[0] || 'default',
     find: () => baseUrl,
     install: 'Start the server at ' + baseUrl,
     async auth() {
+      if (spec.gateway && !/^https?:\/\/(127\.0\.0\.1|localhost)/.test(baseUrl) && !key()) return { ready: false, error: 'No API key yet. Add one in Settings.' };
       try { const list = await models(); return { ready: true, route: spec.model || list[0] || 'reachable' }; }
       catch (error) { return { ready: false, error: 'Not reachable at ' + baseUrl + ' (' + String(error.cause?.code || error.message).slice(0, 60) + ')' }; }
     },

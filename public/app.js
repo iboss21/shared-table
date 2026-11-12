@@ -25,7 +25,9 @@ async function post(path, value = {}) {
   return result;
 }
 const fail = error => { $('error').textContent = error?.message || String(error || ''); };
-const initials = label => label.slice(0, 2);
+const SVG = 'http://www.w3.org/2000/svg';
+function glyph(id, cls) { const svg = document.createElementNS(SVG, 'svg'), use = document.createElementNS(SVG, 'use'); svg.setAttribute('viewBox', id === 'st-logo' ? '0 0 64 64' : '0 0 24 24'); svg.setAttribute('aria-hidden', 'true'); if (cls) svg.setAttribute('class', cls); use.setAttribute('href', '#' + id); svg.append(use); return svg; }
+function avatar(agent) { const badge = el('span', 'avatar'); badge.append(glyph('icon-' + (agent.icon || 'cli'))); return badge; }
 const agentOf = id => state?.agents.find(agent => agent.id === id);
 const tint = (node, id) => { const agent = agentOf(id); node.style.setProperty('--agent', agent ? agent.color : id === 'you' ? 'var(--ink)' : 'var(--muted)'); return node; };
 const seconds = ms => (ms >= 60000 ? Math.floor(ms / 60000) + 'm ' + Math.round((ms % 60000) / 1000) + 's' : (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + 's');
@@ -105,7 +107,7 @@ function replyCard(turn, id) {
   const card = tint(el('section', 'reply'), id); card.id = 'reply-' + turn.id + '-' + id;
   const head = el('div', 'reply-head');
   const names = el('div'); names.append(el('b', '', agent.label));
-  head.append(el('span', 'avatar', initials(agent.label)), names, el('small', '', reply.model && reply.model !== 'demo' ? reply.model : agent.vendor));
+  head.append(avatar(agent), names, el('small', '', reply.model && reply.model !== 'demo' ? reply.model : agent.vendor));
   const status = el('span', 'status is-' + reply.status);
   if (reply.status === 'running' || reply.status === 'queued') status.append(el('span', 'pulse'), reply.activity?.length && !reply.text ? 'working' : reply.text ? 'writing' : 'thinking');
   else status.textContent = reply.status === 'complete' ? seconds(reply.durationMs || 0) : reply.status === 'cancelled' ? 'stopped' : 'failed';
@@ -222,7 +224,7 @@ function renderRail() {
     const live = state.active ? state.conversation.turns.find(turn => turn.id === state.active)?.replies[agent.id]?.status : null;
     const working = live === 'running' || live === 'queued';
     text.append(el('b', '', agent.label + (agent.experimental ? ' (experimental)' : '')), el('small', '', working ? (live === 'queued' ? 'Waiting for its turn' : 'Working now…') : agent.ready ? agent.vendor + ' · ' + agent.route : agent.error));
-    row.append(el('span', 'avatar', initials(agent.label)), text, el('span', working ? 'pulse' : 'dot ' + (agent.checking ? '' : agent.ready ? 'ready' : 'off')));
+    row.append(avatar(agent), text, el('span', working ? 'pulse' : 'dot ' + (agent.checking ? '' : agent.ready ? 'ready' : 'off')));
     if (agent.session) { const open = el('button', 'session-copy', 'session ' + agent.session.slice(0, 8) + ' · copy resume command'); open.type = 'button'; open.title = agent.resume; open.addEventListener('click', event => { event.stopPropagation(); (navigator.clipboard?.writeText(agent.resume) || Promise.reject()).then(() => { open.textContent = 'copied: paste in a terminal'; }, () => { prompt('Run this in a terminal to open the same session:', agent.resume); }); }); text.append(open); }
     const spent = state.conversation.turns.reduce((sum, turn) => sum + ((turn.replies[agent.id]?.usage?.input || 0) + (turn.replies[agent.id]?.usage?.output || 0)), 0);
     if (agent.limit?.status === 'reached') { text.append(el('small', '', 'Usage limit reached')); const bar = el('div', 'meter full'); bar.append(el('i')); bar.firstChild.style.width = '100%'; text.append(bar); row.classList.add('off'); }
@@ -358,8 +360,8 @@ function renderMenu() {
   menuIndex = Math.min(menuIndex, options.length - 1);
   menu.replaceChildren(...options.map((agent, i) => {
     const button = el('button', i === menuIndex ? 'on' : ''); button.type = 'button';
-    const avatar = el('span', 'avatar', initials(agent.label)); avatar.style.setProperty('--agent', agent.color);
-    button.append(avatar, el('b', '', '@' + agent.id), el('small', '', agent.vendor));
+    const badge = agent.id === 'all' ? el('span', 'avatar you') : avatar(agent); if (agent.id === 'all') badge.append(glyph('st-logo')); badge.style.setProperty('--agent', agent.color);
+    button.append(badge, el('b', '', '@' + agent.id), el('small', '', agent.vendor));
     button.addEventListener('mousedown', event => { event.preventDefault(); pickMention(agent.id); });
     return button;
   }));
@@ -456,17 +458,34 @@ function render(next) {
 }
 
 // ---------------------------------------------------------------- start
+function handleEvent(event) {
+  if (event.type === 'state') render(event);
+  else if (event.type === 'reply' && state) patchReply(event);
+  else if (event.type === 'notice') fail(event);
+  else if (event.type === 'terminal' && state?.terminal) { const at = state.terminal.findIndex(entry => entry.id === event.entry.id); if (at >= 0) state.terminal[at] = event.entry; else state.terminal.push(event.entry); renderCommands(); }
+  else if (event.type === 'done') { const turn = state?.conversation.turns.find(item => item.id === event.turnId), failed = turn ? Object.entries(turn.replies).filter(([, reply]) => reply.status === 'error').map(([id]) => agentOf(id)?.label || id) : []; window.SharedTablePet?.signal('finished'); window.SharedTablePet?.say(failed.length ? failed.join(' and ') + ' could not finish. The rest is ready.' : 'Finished. Have a look.', 6000); notify('Agents finished', $('title').textContent); loadChanges(true); }
+}
+// Live updates arrive as a server-sent event stream. Some tunnels (Cloudflare quick tunnels) do not carry such
+// streams, so if nothing arrives the page falls back to asking for the state every second and a half.
+let polling = 0;
+function startPolling() {
+  if (polling) return;
+  let wasActive = null;
+  polling = setInterval(async () => {
+    try {
+      const response = await fetch('/api/state'); if (!response.ok) return;
+      const next = await response.json();
+      if (wasActive && !next.active) handleEvent({ type: 'done', turnId: wasActive });
+      wasActive = next.active; render(next);
+    } catch { /* offline for a moment */ }
+  }, 1500);
+}
 function connect() {
   const events = new EventSource('/api/events');
-  events.onmessage = message => {
-    const event = JSON.parse(message.data);
-    if (event.type === 'state') render(event);
-    else if (event.type === 'reply' && state) patchReply(event);
-    else if (event.type === 'notice') fail(event);
-    else if (event.type === 'terminal' && state?.terminal) { const at = state.terminal.findIndex(entry => entry.id === event.entry.id); if (at >= 0) state.terminal[at] = event.entry; else state.terminal.push(event.entry); renderCommands(); }
-    else if (event.type === 'done') { const turn = state?.conversation.turns.find(item => item.id === event.turnId), failed = turn ? Object.entries(turn.replies).filter(([, reply]) => reply.status === 'error').map(([id]) => agentOf(id)?.label || id) : []; window.SharedTablePet?.signal('finished'); window.SharedTablePet?.say(failed.length ? failed.join(' and ') + ' could not finish. The rest is ready.' : 'Finished. Have a look.', 6000); notify('Agents finished', $('title').textContent); loadChanges(true); }
-  };
-  events.onerror = () => { if (state) $('hint').textContent = 'Connection lost. Reconnecting…'; };
+  let received = false, failures = 0;
+  const watchdog = setTimeout(() => { if (!received) { events.close(); startPolling(); } }, 7000);
+  events.onmessage = message => { received = true; failures = 0; clearTimeout(watchdog); handleEvent(JSON.parse(message.data)); };
+  events.onerror = () => { if (state) $('hint').textContent = 'Connection lost. Reconnecting…'; if (++failures >= 3 && !received) { events.close(); clearTimeout(watchdog); startPolling(); } };
 }
 function showPairing(text, steps) { $('app').hidden = true; $('tabs').hidden = true; $('pairing').hidden = false; $('pairing-text').textContent = text; $('pairing-steps').hidden = !steps; }
 async function start() {
@@ -677,6 +696,48 @@ function renderSettings() {
     nodes.push(row('Full Claude Code harness', 'Build mode: also load your personal MCP servers, plugins and slash commands. Uses much more of your Claude allowance per message.', toggle(settings.fullHarness, on => save({ fullHarness: on })), busy));
     nodes.push(row('Commands tab', 'Run shell commands in the project folder from this page. Host computer only.', toggle(settings.terminal, on => save({ terminal: on })), busy));
   }
+  if (owner && state.gateway) {
+    nodes.push(section('Model gateway'));
+    nodes.push(el('p', 'fineprint', 'Seat any model at the table through its API: Claude, OpenAI, Gemini, OpenRouter, Groq, xAI, Mistral, DeepSeek, or a model running on this computer. These agents answer from the brief, the board, the chat and your attachments; they cannot read or change files.'));
+    for (const item of state.gateway.agents) {
+      const provider = state.gateway.providers.find(entry => entry.id === item.provider), remove = el('button', 'button ghost danger-text', 'Remove'); remove.type = 'button';
+      remove.addEventListener('click', () => post('/api/gateway/agent', { op: 'remove', id: item.id }).catch(fail));
+      nodes.push(row('@' + item.id + ' · ' + item.label, (provider?.label || item.provider) + ' · ' + item.model, remove, busy));
+    }
+    const form = el('form', 'gateway-form'), provider = el('select'), address = el('input'), key = el('input'), model = el('input'), options = el('datalist'), load = el('button', 'button', 'Load models'), add = el('button', 'button primary', 'Add to the table'), note = el('small');
+    form.autocomplete = 'off'; options.id = 'gateway-models'; model.setAttribute('list', options.id);
+    for (const item of state.gateway.providers) { const option = el('option', '', item.label); option.value = item.id; option.selected = item.id === gatewayDraft.provider; provider.append(option); }
+    address.placeholder = 'http://127.0.0.1:8080/v1'; address.value = gatewayDraft.baseUrl; address.spellcheck = false; address.setAttribute('aria-label', 'Server address');
+    key.type = 'password'; key.autocomplete = 'new-password'; key.spellcheck = false; key.setAttribute('aria-label', 'API key');
+    model.placeholder = 'Model'; model.value = gatewayDraft.model; model.spellcheck = false; model.setAttribute('aria-label', 'Model');
+    load.type = 'button'; add.type = 'submit';
+    const current = () => state.gateway.providers.find(item => item.id === provider.value);
+    const sync = () => {
+      const item = current(); gatewayDraft.provider = item.id;
+      address.hidden = !(item.custom || item.local); if (!address.value && item.local) address.placeholder = item.baseUrl;
+      key.hidden = item.local; key.placeholder = item.hasKey ? 'Key ' + (item.keySource === 'saved' ? 'saved' : 'found in ' + item.keyEnv) + '. Paste to replace.' : 'Paste your ' + item.label + ' key' + (item.keyEnv ? ' (or set ' + item.keyEnv + ')' : '');
+      if (!model.value && item.suggest) model.placeholder = item.suggest; else model.placeholder = 'Model';
+      note.textContent = item.local ? 'Start the server first, then load its models.' : 'The key is saved only on this computer, in a file only you can read. It is never shown again or sent anywhere except to ' + item.label + '.';
+    };
+    const saveKey = async () => { if (!key.hidden && key.value.trim()) { await post('/api/gateway/key', { provider: provider.value, key: key.value.trim() }); key.value = ''; } };
+    provider.addEventListener('change', () => { model.value = ''; gatewayDraft.model = ''; options.replaceChildren(); sync(); });
+    address.addEventListener('input', () => { gatewayDraft.baseUrl = address.value; }); model.addEventListener('input', () => { gatewayDraft.model = model.value; });
+    load.addEventListener('click', async () => {
+      note.textContent = 'Loading…';
+      try { await saveKey(); const { models } = await post('/api/gateway/models', { provider: provider.value, baseUrl: address.hidden ? '' : address.value }); gatewayModels = models; note.textContent = models.length + ' models. Pick one or type its name.'; options.replaceChildren(...models.slice(0, 400).map(id => { const option = el('option'); option.value = id; return option; })); model.focus(); }
+      catch (error) { note.textContent = error.message; }
+    });
+    form.addEventListener('submit', async event => {
+      event.preventDefault(); const item = current();
+      try { await saveKey(); await post('/api/gateway/agent', { op: 'add', provider: provider.value, model: model.value.trim() || item.suggest, baseUrl: address.hidden ? '' : address.value }); gatewayDraft.model = ''; }
+      catch (error) { note.textContent = error.message; }
+    });
+    options.replaceChildren(...gatewayModels.slice(0, 400).map(id => { const option = el('option'); option.value = id; return option; }));
+    const line = el('div', 'gateway-line'); line.append(provider, address, key); const line2 = el('div', 'gateway-line'); line2.append(model, options, load, add);
+    form.append(line, line2, note); sync();
+    if (busy) form.classList.add('off');
+    nodes.push(form);
+  }
   nodes.push(section('About'));
   nodes.push(el('p', 'fineprint', 'Shared Table ' + state.version + ' · open source · part of RegesCore by LIKE A KING INC. · project folder: ' + state.project.folder));
   body.replaceChildren(...nodes); body.scrollTop = scroll;
@@ -728,7 +789,7 @@ function openPetMenu(px, py) {
   if (!matchMedia('(max-width: 980px)').matches) search.focus();
 }
 function hello() {
-  const box = $('hello'), logo = el('span', 'logo'); logo.append(el('i'), el('i'), el('i'));
+  const box = $('hello'), logo = glyph('st-logo', 'logo');
   const links = el('div', 'links');
   for (const [label, host] of [['Developer', 'davidio.dev'], ['Company', 'likeakinginc.com'], ['Reges', 'regescore.pro'], ['Reges Code', 'regescode.com'], ['RegesARC', 'regesarc.com']]) { const link = el('a'); link.href = 'https://' + host; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.append(el('b', '', label), el('span', '', host)); links.append(link); }
   const close = el('button', 'button primary', 'Madloba'); close.type = 'button'; close.addEventListener('click', () => box.close());
@@ -756,6 +817,8 @@ async function openPartners() {
   body.replaceChildren(...nodes);
 }
 $('partners-open').addEventListener('click', openPartners);
+const gatewayDraft = { provider: 'anthropic', baseUrl: '', model: '' };
+let gatewayModels = [];
 function setOrder(value) { order = value; for (const item of $('order').children) item.classList.toggle('on', item.dataset.order === value); }
 $('settings-open').addEventListener('click', () => { $('settings').showModal(); renderSettings(); });
 $('project-open').addEventListener('click', event => { event.stopPropagation(); openProjects(); });

@@ -22,5 +22,6 @@ Open a private report at https://github.com/iboss21/shared-table/security/adviso
 - The Commands tab runs whatever you type, as you, in the project folder. It is as powerful as a terminal. Switch it off in Settings if you do not want it.
 - "Same Wi-Fi" is plain HTTP on your network. Anyone on that network can see the traffic. Use "Anywhere" (HTTPS tunnel) on networks you do not trust.
 - "Anywhere" routes through a third-party tunnel (Cloudflare quick tunnel or localhost.run). They carry your traffic; their terms apply.
+- API keys you paste into the model gateway are stored in plain text in `~/.shared-table/keys.json` with owner-only permissions. Anything running as your user can read that file. Use environment variables if you prefer nothing on disk.
 - Conversations are saved unencrypted under `~/.shared-table/`. Everything you type is also sent to the providers behind the agents you address.
 - Other software running under your user account is inside the trust boundary.

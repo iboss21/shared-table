@@ -1,29 +1,30 @@
-// Draws the app icon as PNG without any dependency. Run: node scripts/make-icons.mjs
-import zlib from 'node:zlib';
-import fs from 'node:fs';
-const crcTable = Uint32Array.from({ length: 256 }, (_, n) => { for (let k = 0; k < 8; k++) n = n & 1 ? 0xedb88320 ^ (n >>> 1) : n >>> 1; return n >>> 0; });
-const crc = bytes => { let c = 0xffffffff; for (const b of bytes) c = crcTable[(c ^ b) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
-const chunk = (type, data) => { const head = Buffer.alloc(8); head.writeUInt32BE(data.length); head.write(type, 4); const tail = Buffer.alloc(4); tail.writeUInt32BE(crc(Buffer.concat([head.subarray(4), data]))); return Buffer.concat([head, data, tail]); };
-const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
-const cover = d => Math.max(0, Math.min(1, 0.5 - d)); // signed distance in pixels -> coverage
-function png(size) {
-  const s = size / 512, ink = [27, 26, 23], paper = [244, 241, 234], a = [224, 99, 61], b = [79, 107, 237];
-  const box = (x, y, half, r) => { const qx = Math.abs(x - 256 * s) - (half - r) * s, qy = Math.abs(y - 256 * s) - (half - r) * s; return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r * s; };
-  const raw = Buffer.alloc(size * (size * 4 + 1));
-  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
-    const px = x + 0.5, py = y + 0.5;
-    let color = ink;
-    color = mix(color, paper, cover(Math.abs(box(px, py, 106, 56)) - 13 * s));
-    for (const [cx, fill] of [[112, a], [400, b]]) {
-      const d = Math.hypot(px - cx * s, py - 256 * s);
-      color = mix(color, ink, cover(d - 60 * s));
-      color = mix(color, fill, cover(d - 40 * s));
-    }
-    const alpha = Math.round(255 * cover(box(px, py, 256, 112)));
-    raw.set([...color, alpha], y * (size * 4 + 1) + 1 + x * 4);
-  }
-  const header = Buffer.alloc(13); header.writeUInt32BE(size, 0); header.writeUInt32BE(size, 4); header.set([8, 6, 0, 0, 0], 8);
-  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header), chunk('IDAT', zlib.deflateSync(raw, { level: 9 })), chunk('IEND', Buffer.alloc(0))]);
+// Renders public/icon.svg to the PNG app icons with headless Chrome. Run: node scripts/make-icons.mjs
+import { spawn } from 'node:child_process';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const pub = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+const CHROME = process.env.CHROME_PATH || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : 'google-chrome');
+const port = 9400 + Math.floor(Math.random() * 400), sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'shared-table-icons-'));
+const chrome = spawn(CHROME, ['--headless=new', '--remote-debugging-port=' + port, '--user-data-dir=' + profile, 'about:blank'], { stdio: 'ignore' });
+let version; for (let i = 0; i < 80 && !version; i++) { await sleep(250); version = await fetch(`http://127.0.0.1:${port}/json/version`).then(r => r.json()).catch(() => null); }
+const target = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' }).then(r => r.json());
+const socket = new WebSocket(target.webSocketDebuggerUrl); await new Promise(resolve => { socket.onopen = resolve; });
+let next = 0; const waiting = new Map();
+socket.onmessage = message => { const data = JSON.parse(message.data); if (waiting.has(data.id)) { waiting.get(data.id)(data.result); waiting.delete(data.id); } };
+const send = (method, params = {}) => new Promise(resolve => { const id = ++next; waiting.set(id, resolve); socket.send(JSON.stringify({ id, method, params })); });
+const svg = await fs.readFile(path.join(pub, 'icon.svg'), 'utf8');
+for (const size of [192, 512]) {
+  await send('Emulation.setDeviceMetricsOverride', { width: size, height: size, deviceScaleFactor: 1, mobile: false });
+  await send('Emulation.setDefaultBackgroundColorOverride', { color: { r: 0, g: 0, b: 0, a: 0 } });
+  await send('Page.navigate', { url: 'data:text/html,' + encodeURIComponent('<body style="margin:0">' + svg.replace('<svg ', '<svg style="display:block;width:100vw;height:100vh" ')) });
+  await sleep(500);
+  await fs.writeFile(path.join(pub, 'icon-' + size + '.png'), Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
 }
-for (const size of [192, 512]) fs.writeFileSync(new URL('../public/icon-' + size + '.png', import.meta.url), png(size));
+chrome.kill();
+await fs.rm(profile, { recursive: true, force: true }).catch(() => {});
 console.log('icons written');
+process.exit(0);

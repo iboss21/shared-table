@@ -66,11 +66,8 @@ svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width:
 .brand .chev { color: var(--muted); }
 .brand strong { display: block; font: 600 17px/1.15 var(--serif); letter-spacing: -.01em; }
 .brand small { display: block; color: var(--muted); font-size: 12px; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.logo { position: relative; width: 34px; height: 34px; border-radius: 10px; background: var(--ink); flex: none; display: block; }
-.logo i { position: absolute; border-radius: 50%; }
-.logo i:nth-child(1) { inset: 9px; border: 2px solid var(--bg); border-radius: 7px; }
-.logo i:nth-child(2) { width: 8px; height: 8px; left: 4px; top: 13px; background: #e0633d; box-shadow: 0 0 0 2px var(--ink); }
-.logo i:nth-child(3) { width: 8px; height: 8px; right: 4px; top: 13px; background: #4f6bed; box-shadow: 0 0 0 2px var(--ink); }
+.logo { width: 36px; height: 36px; flex: none; display: block; color: var(--ink); stroke: none; stroke-width: 0; }
+.defs { position: absolute; }
 
 /* ---------- buttons */
 .button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px; padding: 0 13px; border: 1px solid var(--line-2); border-radius: 9px; background: var(--raised); color: var(--ink); font-weight: 550; font-size: 13px; cursor: pointer; text-decoration: none; white-space: nowrap; transition: background .12s, border-color .12s, transform .06s; }
@@ -123,7 +120,9 @@ kbd { font: 11px var(--mono); opacity: .6; }
 .session-copy { display: block; border: 0; background: none; padding: 2px 0 0; cursor: pointer; font: 10.5px var(--mono); color: var(--muted); text-align: left; text-decoration: underline dotted; text-underline-offset: 3px; }
 .session-copy:hover { color: var(--ink); }
 .seat.off small { color: var(--warn); }
-.avatar { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; font: 700 11px/1 var(--sans); letter-spacing: -.02em; color: #fff; background: var(--agent); flex: none; }
+.avatar { width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; color: #fff; background: var(--agent); flex: none; }
+.avatar svg { width: 18px; height: 18px; stroke: #fff; stroke-width: 2; }
+.avatar.you { background: var(--ink); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line-2); }
 .dot.ready { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
 .dot.off { background: var(--warn); }
@@ -284,7 +283,7 @@ kbd { font: 11px var(--mono); opacity: .6; }
 .partner p { color: var(--ink-2); font-size: 12.5px; line-height: 1.45; flex: 1; }
 .partner small { color: var(--muted); font: 11px var(--mono); margin-top: 4px; }
 .sheet.hello { width: min(460px, calc(100vw - 28px)); text-align: center; padding: 34px 30px 26px; }
-.hello .logo { width: 60px; height: 60px; border-radius: 17px; margin: 0 auto 14px; } .hello .logo i:nth-child(1) { inset: 16px; border-radius: 11px; } .hello .logo i:nth-child(2), .hello .logo i:nth-child(3) { width: 13px; height: 13px; top: 23px; } .hello .logo i:nth-child(2) { left: 7px; } .hello .logo i:nth-child(3) { right: 7px; }
+.hello .logo { width: 68px; height: 68px; margin: 0 auto 12px; }
 .hello h2 { font: 600 30px var(--serif); margin-bottom: 4px; } .hello .who { font: 600 16px var(--sans); } .hello p { color: var(--muted); font-size: 13px; margin: 6px 0; }
 .hello .links { display: grid; gap: 6px; margin: 18px 0 16px; } .hello .links a { display: flex; justify-content: space-between; gap: 10px; padding: 9px 13px; border: 1px solid var(--line); border-radius: 11px; color: inherit; text-decoration: none; font-size: 13px; background: var(--raised); }
 .hello .links a:hover { border-color: var(--ink-2); } .hello .links span { color: var(--muted); font: 12px var(--mono); }
@@ -310,7 +309,11 @@ kbd { font: 11px var(--mono); opacity: .6; }
 .setting select { height: 34px; border: 1px solid var(--line-2); border-radius: 9px; background: var(--raised); padding: 0 9px; max-width: 220px; }
 .setting .toggle { position: relative; width: 38px; height: 22px; flex: none; } .setting .toggle input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; z-index: 1; width: 100%; height: 100%; }
 .setting .toggle .switch { position: absolute; inset: 0; } .setting .toggle input:checked + .switch { background: var(--ok); } .setting .toggle input:checked + .switch::after { transform: translateX(16px); }
-.setting.off { opacity: .5; pointer-events: none; }
+.setting.off, .gateway-form.off { opacity: .5; pointer-events: none; }
+.gateway-form { display: flex; flex-direction: column; gap: 8px; padding: 12px; margin-top: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--raised); }
+.gateway-line { display: flex; gap: 8px; flex-wrap: wrap; }
+.gateway-form select, .gateway-form input { height: 34px; border: 1px solid var(--line-2); border-radius: 9px; background: var(--surface); padding: 0 10px; font-size: 13px; flex: 1; min-width: 150px; }
+.gateway-form small { color: var(--muted); font-size: 12px; line-height: 1.4; }
 .theme-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
 .theme-card { border: 1px solid var(--line-2); border-radius: 12px; padding: 0; overflow: hidden; background: none; cursor: pointer; font-size: 12px; font-weight: 600; color: inherit; }
 .theme-card i { display: block; height: 44px; background: linear-gradient(135deg, var(--a) 0 62%, var(--b) 62% 100%); } .theme-card span { display: block; padding: 6px; }
@@ -385,8 +388,7 @@ button.kind { cursor: pointer; border: 1.5px solid var(--line-2); background: no
 /* ---------- pairing screen */
 .pairing { height: 100dvh; display: grid; place-items: center; padding: 24px; }
 .pairing-card { max-width: 340px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; }
-.pairing-card .logo { width: 56px; height: 56px; border-radius: 16px; }
-.pairing-card .logo i:nth-child(1) { inset: 15px; border-radius: 10px; } .pairing-card .logo i:nth-child(2), .pairing-card .logo i:nth-child(3) { width: 12px; height: 12px; top: 22px; } .pairing-card .logo i:nth-child(2) { left: 7px; } .pairing-card .logo i:nth-child(3) { right: 7px; }
+.pairing-card .logo { width: 64px; height: 64px; }
 .pairing-card h1 { font: 600 28px var(--serif); } .pairing-card p { color: var(--muted); }
 .pairing-steps { text-align: left; color: var(--ink-2); padding-left: 20px; margin: 4px 0; line-height: 1.9; }
 

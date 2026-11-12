@@ -3,7 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { resolveAgents, agentEnv, policyFor } from './agents.mjs';
+import { resolveAgents, agentEnv, policyFor, httpAgent } from './agents.mjs';
+import { createGateway } from './gateway.mjs';
 import { runAgent } from './runner.mjs';
 import { createDemoRunner } from './demo.mjs';
 import { KINDS, MAX_ENTRY, parseBoard, visibleText } from './board.mjs';
@@ -39,7 +40,12 @@ const same = (a, b) => a.length === b.length && timingSafeEqual(Buffer.from(a), 
 const cookieOf = (req, name) => (req.headers.cookie || '').split(';').map(part => part.trim()).find(part => part.startsWith(name + '='))?.slice(name.length + 1) || '';
 
 export async function createTable({ config, runner, authenticate, now = () => Date.now(), tunnel = startTunnel } = {}) {
-  const agents = resolveAgents(config);
+  const gateway = await createGateway(config.dataRoot);
+  const seated = resolveAgents(config);
+  const GATEWAY_COLORS = ['#1f9d74', '#b0489f', '#c98a14', '#3b93b8', '#7a5af5', '#d3546e'];
+  // Everyone at the table: the CLI and config agents first, then the model agents added through the gateway.
+  const withGateway = () => [...seated, ...gateway.specs().filter(spec => !seated.some(agent => agent.id === spec.id)).map((spec, i) => { const agent = httpAgent(spec); return { ...agent, color: GATEWAY_COLORS[i % GATEWAY_COLORS.length], path: agent.baseUrl }; })];
+  let agents = withGateway();
   if (!agents.length) throw new Error('No agents configured.');
   const run = runner || (config.demo ? createDemoRunner() : runAgent);
   let runtime = config.dataDir, attachRoot = path.join(runtime, 'attachments'), repo = false;
@@ -128,10 +134,10 @@ export async function createTable({ config, runner, authenticate, now = () => Da
     settings: Object.fromEntries(Object.keys(SETTINGS).map(key => [key, config[key]])),
     approvals: [...approvals.entries()].map(([id, item]) => ({ id, turnId: item.turnId, agent: item.agent, tool: item.tool, detail: item.detail })),
     canApprove: role === 'owner' || config.phoneApprovals,
-    agents: agents.map(agent => ({ id: agent.id, label: agent.label, vendor: agent.vendor, color: agent.color, experimental: !!agent.experimental, approvals: !!agent.approvals, ...statuses[agent.id], ...(limits[agent.id] ? { limit: limits[agent.id] } : {}),
+    agents: agents.map(agent => ({ id: agent.id, label: agent.label, vendor: agent.vendor, color: agent.color, icon: ['claude', 'codex', 'gemini'].includes(agent.id) ? agent.id : agent.kind === 'http' ? (/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/.test(agent.baseUrl) ? 'local' : 'api') : 'cli', experimental: !!agent.experimental, approvals: !!agent.approvals, gateway: !!agent.gateway, tools: agent.kind !== 'http', ...statuses[agent.id], ...(limits[agent.id] ? { limit: limits[agent.id] } : {}),
       ...(role === 'owner' && state.sessions?.[agent.id] && agent.resumeCommand ? { session: state.sessions[agent.id], resume: agent.resumeCommand(state.sessions[agent.id], workDirFor(agent.id)) } : {}) })),
     conversation: state, conversations: index, active: active?.turnId || null, limits: LIMITS,
-    ...(role === 'owner' ? { projects, terminal: config.terminal ? terminal.map(({ stop, ...entry }) => ({ ...entry, output: entry.output.slice(-20000) })) : null, remote: {
+    ...(role === 'owner' ? { gateway: { providers: gateway.providers(), agents: gateway.list() }, projects, terminal: config.terminal ? terminal.map(({ stop, ...entry }) => ({ ...entry, output: entry.output.slice(-20000) })) : null, remote: {
       lan: remote.lan.map(entry => entry.url), lanAvailable: lanAddresses().length > 0,
       tunnel: remote.tunnel?.url || config.publicUrl || null, tunnelStatus: config.publicUrl ? 'on' : remote.tunnelStatus, tunnelError: remote.tunnelError,
       tunnelProvider: config.publicUrl ? 'Your own address' : remote.tunnel?.provider || tunnelProvider()?.label || null,
@@ -316,7 +322,8 @@ export async function createTable({ config, runner, authenticate, now = () => Da
         }
       }
       if (session && state.id === conversationId) {
-        if (result.status === 'complete') state.sessions[id] = agent.id === 'claude' ? session.id : result.sessionId || session.id;
+        if (result.status === 'complete') state.sessions[id] = agent.id === 'claude' ? session.id : result.sessionId || (session.resume ? session.id : null);
+        if (!state.sessions[id]) delete state.sessions[id];
         else if (result.status === 'error' && session.resume) { delete state.sessions[id]; result.error = (result.error || '') + ' (Its saved session was dropped; the next message starts a fresh one.)'; }
       }
       if (result.limit) limits[id] = result.limit;
@@ -521,9 +528,23 @@ export async function createTable({ config, runner, authenticate, now = () => Da
         } catch (error) { return json(res, 400, { error: String(error.message).slice(0, 400) }); }
       }
 
-      // Command panel, settings and projects: host computer only.
-      if (pathname.startsWith('/api/terminal') || pathname === '/api/settings' || pathname === '/api/project') {
+      // Command panel, settings, projects and the model gateway: host computer only.
+      if (pathname.startsWith('/api/terminal') || pathname.startsWith('/api/gateway') || pathname === '/api/settings' || pathname === '/api/project') {
         if (role !== 'owner') return json(res, 403, { error: 'Only the host computer can do this.' });
+        if (pathname.startsWith('/api/gateway')) {
+          try {
+            if (pathname === '/api/gateway/models') return json(res, 200, { models: await gateway.models({ provider: value.provider, baseUrl: value.baseUrl }) });
+            if (active) return json(res, 409, { error: 'Wait for the agents to finish first.' });
+            if (pathname === '/api/gateway/key') await gateway.setKey(value.provider, value.key);
+            else if (pathname === '/api/gateway/agent' && value.op === 'add') await gateway.add(value, [...agents.map(agent => agent.id), 'all', 'everyone', 'you']);
+            else if (pathname === '/api/gateway/agent' && value.op === 'remove') await gateway.remove(String(value.id || ''));
+            else return json(res, 404, { error: 'Not found.' });
+          } catch (error) { return json(res, 400, { error: String(error.cause?.code || error.message).slice(0, 300) }); }
+          agents = withGateway();
+          void updateStatus();
+          broadcastState();
+          return json(res, 200, { ok: true });
+        }
         if (pathname === '/api/terminal/run') {
           const command = String(value.command || '').trim();
           if (!config.terminal) return json(res, 403, { error: 'The command panel is switched off in Settings.' });

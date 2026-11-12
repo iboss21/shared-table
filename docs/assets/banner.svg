@@ -3,12 +3,7 @@
   <g opacity=".5" stroke="#2a2b26" stroke-width="1">
     <path d="M0 130h1600M0 260h1600M0 390h1600M200 0v520M400 0v520M600 0v520M800 0v520M1000 0v520M1200 0v520M1400 0v520"/>
   </g>
-  <g transform="translate(120 120)">
-    <rect width="96" height="96" rx="27" fill="#f2efe7"/>
-    <rect x="28" y="28" width="40" height="40" rx="11" fill="none" stroke="#0f100e" stroke-width="6"/>
-    <circle cx="19" cy="48" r="14" fill="#f2efe7"/><circle cx="19" cy="48" r="9.5" fill="#e0633d"/>
-    <circle cx="77" cy="48" r="14" fill="#f2efe7"/><circle cx="77" cy="48" r="9.5" fill="#4f6bed"/>
-  </g>
+  <g transform="translate(116 112) scale(1.65)"><rect width="64" height="64" rx="15" fill="#f2efe7"/><path d="M18 13h28a9 9 0 0 1 9 9v6a9 9 0 0 1-9 9h-1v12.5a3.5 3.5 0 0 1-7 0V37H26v12.5a3.5 3.5 0 0 1-7 0V37h-1a9 9 0 0 1-9-9v-6a9 9 0 0 1 9-9Z" fill="#14140f"/><circle cx="22" cy="25" r="3.2" fill="#f2efe7"/><circle cx="32" cy="25" r="3.2" fill="#d31414"/><circle cx="42" cy="25" r="3.2" fill="#f2efe7"/></g>
   <text x="120" y="320" font-family="'Iowan Old Style', Palatino, 'Palatino Linotype', Georgia, serif" font-size="104" font-weight="600" fill="#f2efe7" letter-spacing="-2">Shared Table</text>
   <text x="124" y="382" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="34" fill="#9a968b">One chat that runs Claude Code, Codex and your other coding agents together.</text>
   <g font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="24" font-weight="600">
